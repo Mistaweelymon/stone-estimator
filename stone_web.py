@@ -108,3 +108,201 @@ def generate_html_ticket(packer, slab_l, slab_w, margin, slabs_used, total_cost,
         </div>
         
         <div class="summary">
+            <strong>Slabs Needed:</strong> {slabs_used} <br>
+            <strong>Total Cost:</strong> ${total_cost:,.2f} <br>
+            <strong>Waste:</strong> {waste_pct:.1f}% <br>
+            <strong>Kerf/Margin:</strong> {margin}"
+        </div>
+
+        <h3>Cut List</h3>
+        <table>
+            <tr><th>Piece ID</th><th>Dimensions (Final)</th></tr>
+    """
+    
+    for b in packer.bins:
+        for (rx, ry, rw, rh, rid) in b.rects:
+            html += f"<tr><td>{rid}</td><td>{rw-margin:.3f} x {rh-margin:.3f}</td></tr>"
+
+    html += "</table><h3>Slab Layouts</h3>"
+
+    for i, b in enumerate(packer.bins):
+        html += f"""
+        <div class="slab-box">
+            <h4>Slab #{i+1}</h4>
+            <svg viewBox="0 0 {slab_l} {slab_w}" width="100%">
+                <rect x="0" y="0" width="{slab_l}" height="{slab_w}" fill="none" stroke="black" stroke-width="0.2"/>
+        """
+        
+        for (rx, ry, rw, rh, rid) in b.rects:
+            font_size = min(rw, rh) * 0.2
+            if font_size > 3: font_size = 3
+            
+            html += f"""
+                <rect class="piece" x="{rx}" y="{ry}" width="{rw}" height="{rh}" />
+                <text x="{rx + rw/2}" y="{ry + rh/2}" font-size="{font_size}">
+                    {rid} ({rw-margin:.1f}x{rh-margin:.1f})
+                </text>
+            """
+        
+        html += "</svg></div>"
+
+    html += "</body></html>"
+    return html
+
+# ==========================================
+#   WEB INTERFACE (Streamlit)
+# ==========================================
+
+st.set_page_config(page_title="Stone Estimator Web", layout="wide")
+
+st.title("🪨 Stone Slab Estimator Pro")
+
+# --- SIDEBAR: SETTINGS ---
+with st.sidebar:
+    st.header("1. Slab Settings")
+    slab_l = st.number_input("Slab Length (in)", value=130.0)
+    slab_w = st.number_input("Slab Width (in)", value=65.0)
+    cost = st.number_input("Cost per Slab ($)", value=0.0)
+    
+    # --- UPDATED: Default is now 0.125 (1/8 inch) ---
+    margin = st.number_input("Saw Blade / Kerf (in)", value=0.125, step=0.001, format="%.3f")
+
+    st.header("Actions")
+    if st.button("Clear All Pieces"):
+        st.session_state['pieces'] = []
+        st.rerun()
+
+# --- INITIALIZE STATE ---
+if 'pieces' not in st.session_state:
+    st.session_state['pieces'] = []
+
+# --- ADD PIECES FORM ---
+st.subheader("2. Add Pieces")
+col1, col2, col3, col4, col5, col6, col7 = st.columns([2, 2, 1.5, 1.5, 1, 1.5, 1.5])
+
+with col1: room = st.text_input("Room", "Kitchen")
+with col2: name = st.text_input("Piece Name", "Counter")
+with col3: l = st.number_input("Length", min_value=0.0, value=0.0)
+with col4: w = st.number_input("Width", min_value=0.0, value=0.0)
+with col5: qty = st.number_input("Qty", min_value=1, value=1)
+with col6: rot = st.checkbox("Allow Rotation?")
+with col7: 
+    st.write("") 
+    add_btn = st.button("➕ Add")
+
+if add_btn:
+    if l > 0 and w > 0:
+        st.session_state['pieces'].append({
+            "room": room, "name": name, "l": l, "w": w, "qty": qty, "rot": rot
+        })
+    else:
+        st.error("Please enter valid dimensions.")
+
+# --- SHOW LIST ---
+if st.session_state['pieces']:
+    st.write("### Current Cut List")
+    display_data = []
+    for i, p in enumerate(st.session_state['pieces']):
+        display_data.append({
+            "Room": p['room'], 
+            "Name": p['name'], 
+            "Dims": f"{p['l']} x {p['w']}", 
+            "Rotate": "Yes" if p['rot'] else "No",
+            "Qty": p['qty']
+        })
+    st.table(display_data)
+
+# --- CALCULATE ---
+if st.button("🚀 CALCULATE LAYOUT", type="primary"):
+    if not st.session_state['pieces']:
+        st.warning("Add pieces first!")
+    else:
+        packing_list = []
+        total_project_area = 0
+        error_msg = None
+
+        for p in st.session_state['pieces']:
+            if not p['rot'] and (p['w'] + margin > slab_w):
+                error_msg = f"Piece '{p['name']}' is too wide ({p['w']}\") for slab ({slab_w}\") and rotation is OFF."
+                break
+
+            for _ in range(p['qty']):
+                rem_len = p['l']
+                parts = []
+                while rem_len > 0:
+                    cut = min(rem_len, slab_l - margin)
+                    fut = rem_len - cut
+                    if fut > 0 and fut < 25.0: cut -= (25.0 - fut)
+                    parts.append(cut)
+                    rem_len -= cut
+                
+                count = len(parts)
+                for idx, plen in enumerate(parts):
+                    pid = f"{p['room']}: {p['name']}" + (f" ({idx+1}/{count})" if count > 1 else "")
+                    # --- ADD MARGIN AUTOMATICALLY ---
+                    packing_list.append((plen + margin, p['w'] + margin, pid, p['rot']))
+                    total_project_area += (plen * p['w'])
+
+        if error_msg:
+            st.error(error_msg)
+        else:
+            packer = StonePacker(slab_l, slab_w)
+            success, msg = packer.pack(packing_list)
+
+            if not success:
+                st.error(msg)
+            else:
+                slabs_used = len(packer.bins)
+                total_mat_cost = slabs_used * cost
+                total_slab_area = slabs_used * (slab_l * slab_w)
+                waste_pct = ((total_slab_area - total_project_area) / total_slab_area * 100) if total_slab_area else 0
+                waste_cost = (waste_pct / 100) * total_mat_cost
+                
+                html_ticket = generate_html_ticket(packer, slab_l, slab_w, margin, slabs_used, total_mat_cost, waste_pct)
+
+                st.success("Calculation Complete!")
+                
+                col_res1, col_res2 = st.columns([1, 1])
+                with col_res1:
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("Slabs Needed", slabs_used)
+                    m2.metric("Total Cost", f"${total_mat_cost:,.2f}")
+                    m3.metric("Waste", f"{waste_pct:.1f}%")
+                
+                with col_res2:
+                    st.download_button(
+                        label="📄 Download Printable Job Ticket (HTML)",
+                        data=html_ticket,
+                        file_name="stone_job_ticket.html",
+                        mime="text/html",
+                        help="Download this file, open it, and press Ctrl+P to save as PDF."
+                    )
+
+                st.divider()
+
+                for i, b in enumerate(packer.bins):
+                    st.subheader(f"Slab #{i+1}")
+                    
+                    fig, ax = plt.subplots(figsize=(10, 5))
+                    ax.add_patch(patches.Rectangle((0, 0), slab_l, slab_w, linewidth=2, edgecolor='black', facecolor='#f0f0f0'))
+                    
+                    for (rx, ry, rw, rh, rid) in b.rects:
+                        ax.add_patch(patches.Rectangle((rx, ry), rw, rh, linewidth=1, edgecolor='green', facecolor='#d1e7dd'))
+                        
+                        cx = rx + rw/2
+                        cy = ry + rh/2
+                        display_l = rw - margin
+                        display_w = rh - margin
+                        
+                        font_size = 8
+                        if rw < 20 or rh < 10: font_size = 6
+                        
+                        ax.text(cx, cy, f"{rid}\n{display_l:.1f}x{display_w:.1f}", 
+                                ha='center', va='center', fontsize=font_size, color='black')
+
+                    ax.set_xlim(0, slab_l)
+                    ax.set_ylim(0, slab_w)
+                    ax.set_aspect('equal')
+                    plt.axis('off')
+                    
+                    st.pyplot(fig)
