@@ -3,16 +3,19 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
 # ==========================================
-#   CUSTOM PACKING ENGINE (The Brains)
+#   CUSTOM PACKING ENGINE (Guillotine Logic)
+#   Fixes overlap issues by creating disjoint free spaces.
 # ==========================================
 class SimpleBin:
     def __init__(self, width, height):
         self.w = width
         self.h = height
-        self.rects = []
+        self.rects = []  # Stores (x, y, w, h, id)
+        # We track "free spaces" as a list of disjoint rectangles
         self.free_rects = [(0, 0, width, height)]
 
     def add_rect(self, width, height, rid, can_rotate):
+        # 1. Find the best free space
         best_rect_idx = -1
         best_short_side_fit = float('inf')
         best_orientation = (width, height)
@@ -34,15 +37,37 @@ class SimpleBin:
                         best_rect_idx = i
                         best_orientation = (test_w, test_h)
 
+        # 2. Place the piece
         if best_rect_idx != -1:
             fx, fy, fw, fh = self.free_rects.pop(best_rect_idx)
             final_w, final_h = best_orientation
             self.rects.append((fx, fy, final_w, final_h, rid))
             
-            if fw > final_w:
-                self.free_rects.append((fx + final_w, fy, fw - final_w, fh))
-            if fh > final_h:
-                self.free_rects.append((fx, fy + final_h, fw, fh - final_h))
+            # 3. GUILLOTINE SPLIT (Disjoint Rectangles)
+            # We split the remaining L-shape into two non-overlapping rectangles.
+            # We choose the split that creates the larger contiguous area (Minimizing fragmentation).
+            
+            rem_w = fw - final_w
+            rem_h = fh - final_h
+            
+            # Split Strategy: Minimize Short Axis Split (Shorter Axis Split Rule)
+            if rem_w < rem_h:
+                # Split Horizontally (Top rect gets full width)
+                # Right Rect: (fx + w, fy, rem_w, h)
+                # Top Rect:   (fx, fy + h, fw, rem_h)
+                if rem_w > 0:
+                    self.free_rects.append((fx + final_w, fy, rem_w, final_h))
+                if rem_h > 0:
+                    self.free_rects.append((fx, fy + final_h, fw, rem_h))
+            else:
+                # Split Vertically (Right rect gets full height)
+                # Right Rect: (fx + w, fy, rem_w, fh)
+                # Top Rect:   (fx, fy + h, w, rem_h)
+                if rem_w > 0:
+                    self.free_rects.append((fx + final_w, fy, rem_w, fh))
+                if rem_h > 0:
+                    self.free_rects.append((fx, fy + final_h, final_w, rem_h))
+                    
             return True
         return False
 
@@ -53,7 +78,7 @@ class StonePacker:
         self.bins = []
 
     def pack(self, pieces):
-        # pieces = (l, w, id, can_rotate)
+        # Sort by Area (Largest first)
         pieces.sort(key=lambda x: x[0] * x[1], reverse=True)
         
         for p in pieces:
@@ -113,14 +138,12 @@ def generate_html_ticket(packer, slab_l, slab_w, margin, slabs_used, total_cost,
             <tr><th>Piece ID</th><th>Dimensions (Final)</th></tr>
     """
     
-    # Table Rows
     for b in packer.bins:
         for (rx, ry, rw, rh, rid) in b.rects:
             html += f"<tr><td>{rid}</td><td>{rw-margin:.1f} x {rh-margin:.1f}</td></tr>"
 
     html += "</table><h3>Slab Layouts</h3>"
 
-    # SVG Layouts
     for i, b in enumerate(packer.bins):
         html += f"""
         <div class="slab-box">
@@ -130,7 +153,6 @@ def generate_html_ticket(packer, slab_l, slab_w, margin, slabs_used, total_cost,
         """
         
         for (rx, ry, rw, rh, rid) in b.rects:
-            # Dynamic Font Size
             font_size = min(rw, rh) * 0.2
             if font_size > 3: font_size = 3
             
