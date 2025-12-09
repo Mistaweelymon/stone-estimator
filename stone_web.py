@@ -1,7 +1,6 @@
 import streamlit as st
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
-from io import BytesIO
 
 # ==========================================
 #   CUSTOM PACKING ENGINE (The Brains)
@@ -72,6 +71,82 @@ class StonePacker:
         return True, "Success"
 
 # ==========================================
+#   HTML TICKET GENERATOR
+# ==========================================
+def generate_html_ticket(packer, slab_l, slab_w, margin, slabs_used, total_cost, waste_pct):
+    html = f"""
+    <html>
+    <head>
+        <title>Fabrication Job Ticket</title>
+        <style>
+            body {{ font-family: sans-serif; padding: 20px; }}
+            .header {{ border-bottom: 2px solid #333; padding-bottom: 10px; margin-bottom: 20px; }}
+            .summary {{ background: #f0f0f0; padding: 15px; margin-bottom: 20px; border-radius: 5px; }}
+            .slab-box {{ border: 1px solid #ccc; padding: 10px; margin-bottom: 30px; page-break-inside: avoid; }}
+            table {{ width: 100%; border-collapse: collapse; margin-bottom: 20px; }}
+            th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+            th {{ background-color: #f2f2f2; }}
+            svg {{ background: #fafafa; border: 1px solid #000; }}
+            rect.piece {{ fill: #d1e7dd; stroke: #28a745; stroke-width: 1; }}
+            text {{ font-family: Arial; font-size: 0.4px; text-anchor: middle; dominant-baseline: middle; }}
+            
+            @media print {{
+                .no-print {{ display: none; }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="header">
+            <h1>Fabrication Job Ticket</h1>
+            <button class="no-print" onclick="window.print()" style="font-size:16px; padding:10px 20px; cursor:pointer;">🖨️ PRINT / SAVE AS PDF</button>
+        </div>
+        
+        <div class="summary">
+            <strong>Slabs Needed:</strong> {slabs_used} <br>
+            <strong>Total Cost:</strong> ${total_cost:,.2f} <br>
+            <strong>Waste:</strong> {waste_pct:.1f}% <br>
+            <strong>Slab Size:</strong> {slab_l} x {slab_w} in
+        </div>
+
+        <h3>Cut List</h3>
+        <table>
+            <tr><th>Piece ID</th><th>Dimensions (Final)</th></tr>
+    """
+    
+    # Table Rows
+    for b in packer.bins:
+        for (rx, ry, rw, rh, rid) in b.rects:
+            html += f"<tr><td>{rid}</td><td>{rw-margin:.1f} x {rh-margin:.1f}</td></tr>"
+
+    html += "</table><h3>Slab Layouts</h3>"
+
+    # SVG Layouts
+    for i, b in enumerate(packer.bins):
+        html += f"""
+        <div class="slab-box">
+            <h4>Slab #{i+1}</h4>
+            <svg viewBox="0 0 {slab_l} {slab_w}" width="100%">
+                <rect x="0" y="0" width="{slab_l}" height="{slab_w}" fill="none" stroke="black" stroke-width="0.2"/>
+        """
+        
+        for (rx, ry, rw, rh, rid) in b.rects:
+            # Dynamic Font Size
+            font_size = min(rw, rh) * 0.2
+            if font_size > 3: font_size = 3
+            
+            html += f"""
+                <rect class="piece" x="{rx}" y="{ry}" width="{rw}" height="{rh}" />
+                <text x="{rx + rw/2}" y="{ry + rh/2}" font-size="{font_size}">
+                    {rid} ({rw-margin:.0f}x{rh-margin:.0f})
+                </text>
+            """
+        
+        html += "</svg></div>"
+
+    html += "</body></html>"
+    return html
+
+# ==========================================
 #   WEB INTERFACE (Streamlit)
 # ==========================================
 
@@ -102,7 +177,6 @@ col1, col2, col3, col4, col5, col6, col7 = st.columns([2, 2, 1.5, 1.5, 1, 1.5, 1
 
 with col1: room = st.text_input("Room", "Kitchen")
 with col2: name = st.text_input("Piece Name", "Counter")
-# FIX: Changed min_value to 0.0 to match the default value, preventing the crash
 with col3: l = st.number_input("Length", min_value=0.0, value=0.0)
 with col4: w = st.number_input("Width", min_value=0.0, value=0.0)
 with col5: qty = st.number_input("Qty", min_value=1, value=1)
@@ -176,23 +250,38 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
             if not success:
                 st.error(msg)
             else:
-                # --- SHOW RESULTS ---
+                # --- CALC STATS ---
                 slabs_used = len(packer.bins)
                 total_mat_cost = slabs_used * cost
                 total_slab_area = slabs_used * (slab_l * slab_w)
                 waste_pct = ((total_slab_area - total_project_area) / total_slab_area * 100) if total_slab_area else 0
-                waste_cost = (waste_pct / 100) * total_mat_cost
+                
+                # --- GENERATE TICKET ---
+                html_ticket = generate_html_ticket(packer, slab_l, slab_w, margin, slabs_used, total_mat_cost, waste_pct)
 
+                # --- SHOW RESULTS ---
                 st.success("Calculation Complete!")
                 
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Slabs Needed", slabs_used)
-                m2.metric("Total Cost", f"${total_mat_cost:,.2f}")
-                m3.metric("Waste", f"{waste_pct:.1f}% (${waste_cost:,.2f})")
+                col_res1, col_res2 = st.columns([1, 1])
+                with col_res1:
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("Slabs Needed", slabs_used)
+                    m2.metric("Total Cost", f"${total_mat_cost:,.2f}")
+                    m3.metric("Waste", f"{waste_pct:.1f}%")
+                
+                with col_res2:
+                    # THE DOWNLOAD BUTTON
+                    st.download_button(
+                        label="📄 Download Printable Job Ticket (HTML)",
+                        data=html_ticket,
+                        file_name="stone_job_ticket.html",
+                        mime="text/html",
+                        help="Download this file, open it, and press Ctrl+P to save as PDF."
+                    )
 
                 st.divider()
 
-                # --- DRAW VISUALS ---
+                # --- DRAW PREVIEW (Visual only) ---
                 for i, b in enumerate(packer.bins):
                     st.subheader(f"Slab #{i+1}")
                     
@@ -207,7 +296,6 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
                         display_l = rw - margin
                         display_w = rh - margin
                         
-                        # Dynamic Font Size
                         font_size = 8
                         if rw < 20 or rh < 10: font_size = 6
                         
