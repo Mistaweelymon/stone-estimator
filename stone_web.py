@@ -9,7 +9,8 @@ class SimpleBin:
     def __init__(self, width, height):
         self.w = width
         self.h = height
-        self.rects = []
+        self.rects = []  # Stores (x, y, w, h, id)
+        # Free rects track the USABLE space
         self.free_rects = [(0, 0, width, height)]
 
     def add_rect(self, width, height, rid, can_rotate):
@@ -39,7 +40,7 @@ class SimpleBin:
             final_w, final_h = best_orientation
             self.rects.append((fx, fy, final_w, final_h, rid))
             
-            # Guillotine Split (Disjoint Rectangles)
+            # Guillotine Split
             rem_w = fw - final_w
             rem_h = fh - final_h
             
@@ -53,13 +54,14 @@ class SimpleBin:
         return False
 
 class StonePacker:
-    def __init__(self, slab_l, slab_w):
-        self.slab_l = slab_l
-        self.slab_w = slab_w
+    # We now pass the USABLE size to the packer, not the full slab size
+    def __init__(self, usable_l, usable_w):
+        self.slab_l = usable_l
+        self.slab_w = usable_w
         self.bins = []
 
     def pack(self, pieces):
-        # Sort by Area (Largest first)
+        # pieces = (l, w, id, can_rotate)
         pieces.sort(key=lambda x: x[0] * x[1], reverse=True)
         
         for p in pieces:
@@ -72,14 +74,14 @@ class StonePacker:
             if not placed:
                 new_bin = SimpleBin(self.slab_l, self.slab_w)
                 if not new_bin.add_rect(pl, pw, pid, rot):
-                    return False, f"Piece '{pid}' ({pl}x{pw}) is too big for slab."
+                    return False, f"Piece '{pid}' ({pl:.2f}x{pw:.2f} with kerf) fits nowhere."
                 self.bins.append(new_bin)
         return True, "Success"
 
 # ==========================================
 #   HTML TICKET GENERATOR
 # ==========================================
-def generate_html_ticket(packer, slab_l, slab_w, margin, slabs_used, total_cost, waste_pct):
+def generate_html_ticket(packer, slab_l, slab_w, slab_trim, kerf, slabs_used, total_cost, waste_pct):
     html = f"""
     <html>
     <head>
@@ -94,6 +96,7 @@ def generate_html_ticket(packer, slab_l, slab_w, margin, slabs_used, total_cost,
             th {{ background-color: #f2f2f2; }}
             svg {{ background: #fafafa; border: 1px solid #000; }}
             rect.piece {{ fill: #d1e7dd; stroke: #28a745; stroke-width: 1; }}
+            rect.safe-zone {{ fill: none; stroke: #ff4444; stroke-width: 1; stroke-dasharray: 5,5; }}
             text {{ font-family: Arial; font-size: 0.4px; text-anchor: middle; dominant-baseline: middle; }}
             
             @media print {{
@@ -111,17 +114,25 @@ def generate_html_ticket(packer, slab_l, slab_w, margin, slabs_used, total_cost,
             <strong>Slabs Needed:</strong> {slabs_used} <br>
             <strong>Total Cost:</strong> ${total_cost:,.2f} <br>
             <strong>Waste:</strong> {waste_pct:.1f}% <br>
-            <strong>Kerf/Margin:</strong> {margin}"
+            <strong>Full Slab Size:</strong> {slab_l} x {slab_w} in <br>
+            <small><em>(Includes {slab_trim}" edge trim and {kerf}" saw kerf)</em></small>
         </div>
 
         <h3>Cut List</h3>
         <table>
-            <tr><th>Piece ID</th><th>Dimensions (Final)</th></tr>
+            <tr><th>Piece ID</th><th>Dimensions (Final Cut Size)</th></tr>
     """
     
+    # Calculate offset to center the usable area in the full slab
+    offset_x = slab_trim
+    offset_y = slab_trim
+
     for b in packer.bins:
         for (rx, ry, rw, rh, rid) in b.rects:
-            html += f"<tr><td>{rid}</td><td>{rw-margin:.3f} x {rh-margin:.3f}</td></tr>"
+            # Remove the double kerf to show actual stone size
+            final_l = rw - (2 * kerf)
+            final_w = rh - (2 * kerf)
+            html += f"<tr><td>{rid}</td><td>{final_l:.3f} x {final_w:.3f}</td></tr>"
 
     html += "</table><h3>Slab Layouts</h3>"
 
@@ -131,16 +142,29 @@ def generate_html_ticket(packer, slab_l, slab_w, margin, slabs_used, total_cost,
             <h4>Slab #{i+1}</h4>
             <svg viewBox="0 0 {slab_l} {slab_w}" width="100%">
                 <rect x="0" y="0" width="{slab_l}" height="{slab_w}" fill="none" stroke="black" stroke-width="0.2"/>
+                
+                <rect x="{offset_x}" y="{offset_y}" width="{slab_l - (2*slab_trim)}" height="{slab_w - (2*slab_trim)}" class="safe-zone" />
         """
         
         for (rx, ry, rw, rh, rid) in b.rects:
-            font_size = min(rw, rh) * 0.2
+            # Logic: 
+            # Packer coords (rx) start at 0 inside the safe zone.
+            # We must shift them by 'slab_trim' to place them correctly on the full slab.
+            # We must also ADD 'kerf' to the start position to draw the inner stone, 
+            # and SUBTRACT (2*kerf) from size to draw the actual piece, not the cut box.
+            
+            draw_x = rx + offset_x + kerf
+            draw_y = ry + offset_y + kerf
+            draw_w = rw - (2 * kerf)
+            draw_h = rh - (2 * kerf)
+
+            font_size = min(draw_w, draw_h) * 0.2
             if font_size > 3: font_size = 3
             
             html += f"""
-                <rect class="piece" x="{rx}" y="{ry}" width="{rw}" height="{rh}" />
-                <text x="{rx + rw/2}" y="{ry + rh/2}" font-size="{font_size}">
-                    {rid} ({rw-margin:.1f}x{rh-margin:.1f})
+                <rect class="piece" x="{draw_x}" y="{draw_y}" width="{draw_w}" height="{draw_h}" />
+                <text x="{draw_x + draw_w/2}" y="{draw_y + draw_h/2}" font-size="{font_size}">
+                    {rid} ({draw_w:.1f}x{draw_h:.1f})
                 </text>
             """
         
@@ -160,12 +184,20 @@ st.title("🪨 Stone Slab Estimator Pro")
 # --- SIDEBAR: SETTINGS ---
 with st.sidebar:
     st.header("1. Slab Settings")
-    slab_l = st.number_input("Slab Length (in)", value=130.0)
-    slab_w = st.number_input("Slab Width (in)", value=65.0)
+    slab_l = st.number_input("Full Slab Length (in)", value=130.0)
+    slab_w = st.number_input("Full Slab Width (in)", value=65.0)
     cost = st.number_input("Cost per Slab ($)", value=0.0)
     
-    # --- UPDATED: Default is now 0.125 (1/8 inch) ---
-    margin = st.number_input("Saw Blade / Kerf (in)", value=0.125, step=0.001, format="%.3f")
+    st.divider()
+    st.write("### Tolerances")
+    
+    # 1. Slab Edge Trim (Reduces usable bin size)
+    slab_trim = st.number_input("Slab Edge Trim (in)", value=1.0, step=0.5, 
+                               help="Amount to subtract from ALL slab edges to account for rough/unusable edges.")
+    
+    # 2. Saw Kerf (Increases piece size)
+    kerf = st.number_input("Saw Blade / Kerf (in)", value=0.125, step=0.001, format="%.3f",
+                           help="Space added to ALL 4 sides of every piece for the blade width.")
 
     st.header("Actions")
     if st.button("Clear All Pieces"):
@@ -217,92 +249,133 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
     if not st.session_state['pieces']:
         st.warning("Add pieces first!")
     else:
-        packing_list = []
-        total_project_area = 0
-        error_msg = None
-
-        for p in st.session_state['pieces']:
-            if not p['rot'] and (p['w'] + margin > slab_w):
-                error_msg = f"Piece '{p['name']}' is too wide ({p['w']}\") for slab ({slab_w}\") and rotation is OFF."
-                break
-
-            for _ in range(p['qty']):
-                rem_len = p['l']
-                parts = []
-                while rem_len > 0:
-                    cut = min(rem_len, slab_l - margin)
-                    fut = rem_len - cut
-                    if fut > 0 and fut < 25.0: cut -= (25.0 - fut)
-                    parts.append(cut)
-                    rem_len -= cut
-                
-                count = len(parts)
-                for idx, plen in enumerate(parts):
-                    pid = f"{p['room']}: {p['name']}" + (f" ({idx+1}/{count})" if count > 1 else "")
-                    # --- ADD MARGIN AUTOMATICALLY ---
-                    packing_list.append((plen + margin, p['w'] + margin, pid, p['rot']))
-                    total_project_area += (plen * p['w'])
-
-        if error_msg:
-            st.error(error_msg)
+        # Calculate USABLE slab area
+        usable_l = slab_l - (2 * slab_trim)
+        usable_w = slab_w - (2 * slab_trim)
+        
+        if usable_l <= 0 or usable_w <= 0:
+            st.error("Error: Edge Trim is too large! It consumes the entire slab.")
         else:
-            packer = StonePacker(slab_l, slab_w)
-            success, msg = packer.pack(packing_list)
+            packing_list = []
+            total_project_area = 0
+            error_msg = None
 
-            if not success:
-                st.error(msg)
+            for p in st.session_state['pieces']:
+                
+                # Bounds Check uses USABLE size
+                # Piece size includes KERF padding on all sides (2 * kerf)
+                piece_total_w = p['w'] + (2 * kerf)
+                piece_total_l = p['l'] + (2 * kerf)
+                
+                if not p['rot'] and (piece_total_w > usable_w):
+                    error_msg = f"Piece '{p['name']}' ({piece_total_w}\" w/ kerf) is too wide for usable slab ({usable_w}\"). Rotation OFF."
+                    break
+
+                for _ in range(p['qty']):
+                    rem_len = p['l']
+                    parts = []
+                    # Smart Seam
+                    while rem_len > 0:
+                        # Max cut is based on usable length minus kerf padding
+                        max_cut_len = usable_l - (2 * kerf)
+                        cut = min(rem_len, max_cut_len)
+                        
+                        fut = rem_len - cut
+                        if fut > 0 and fut < 25.0: 
+                            adjustment = 25.0 - fut
+                            cut -= adjustment
+                        
+                        parts.append(cut)
+                        rem_len -= cut
+                    
+                    count = len(parts)
+                    for idx, plen in enumerate(parts):
+                        pid = f"{p['room']}: {p['name']}" + (f" ({idx+1}/{count})" if count > 1 else "")
+                        
+                        # IMPORTANT: Add KERF to dimensions here for packing
+                        pack_l = plen + (2 * kerf)
+                        pack_w = p['w'] + (2 * kerf)
+                        
+                        packing_list.append((pack_l, pack_w, pid, p['rot']))
+                        total_project_area += (plen * p['w']) # Area uses actual stone size
+
+            if error_msg:
+                st.error(error_msg)
             else:
-                slabs_used = len(packer.bins)
-                total_mat_cost = slabs_used * cost
-                total_slab_area = slabs_used * (slab_l * slab_w)
-                waste_pct = ((total_slab_area - total_project_area) / total_slab_area * 100) if total_slab_area else 0
-                waste_cost = (waste_pct / 100) * total_mat_cost
-                
-                html_ticket = generate_html_ticket(packer, slab_l, slab_w, margin, slabs_used, total_mat_cost, waste_pct)
+                packer = StonePacker(usable_l, usable_w)
+                success, msg = packer.pack(packing_list)
 
-                st.success("Calculation Complete!")
-                
-                col_res1, col_res2 = st.columns([1, 1])
-                with col_res1:
-                    m1, m2, m3 = st.columns(3)
-                    m1.metric("Slabs Needed", slabs_used)
-                    m2.metric("Total Cost", f"${total_mat_cost:,.2f}")
-                    m3.metric("Waste", f"{waste_pct:.1f}%")
-                
-                with col_res2:
-                    st.download_button(
-                        label="📄 Download Printable Job Ticket (HTML)",
-                        data=html_ticket,
-                        file_name="stone_job_ticket.html",
-                        mime="text/html",
-                        help="Download this file, open it, and press Ctrl+P to save as PDF."
-                    )
-
-                st.divider()
-
-                for i, b in enumerate(packer.bins):
-                    st.subheader(f"Slab #{i+1}")
+                if not success:
+                    st.error(msg)
+                else:
+                    slabs_used = len(packer.bins)
+                    total_mat_cost = slabs_used * cost
+                    total_slab_area = slabs_used * (slab_l * slab_w)
+                    waste_pct = ((total_slab_area - total_project_area) / total_slab_area * 100) if total_slab_area else 0
+                    waste_cost = (waste_pct / 100) * total_mat_cost
                     
-                    fig, ax = plt.subplots(figsize=(10, 5))
-                    ax.add_patch(patches.Rectangle((0, 0), slab_l, slab_w, linewidth=2, edgecolor='black', facecolor='#f0f0f0'))
-                    
-                    for (rx, ry, rw, rh, rid) in b.rects:
-                        ax.add_patch(patches.Rectangle((rx, ry), rw, rh, linewidth=1, edgecolor='green', facecolor='#d1e7dd'))
-                        
-                        cx = rx + rw/2
-                        cy = ry + rh/2
-                        display_l = rw - margin
-                        display_w = rh - margin
-                        
-                        font_size = 8
-                        if rw < 20 or rh < 10: font_size = 6
-                        
-                        ax.text(cx, cy, f"{rid}\n{display_l:.1f}x{display_w:.1f}", 
-                                ha='center', va='center', fontsize=font_size, color='black')
+                    html_ticket = generate_html_ticket(packer, slab_l, slab_w, slab_trim, kerf, slabs_used, total_mat_cost, waste_pct)
 
-                    ax.set_xlim(0, slab_l)
-                    ax.set_ylim(0, slab_w)
-                    ax.set_aspect('equal')
-                    plt.axis('off')
+                    st.success("Calculation Complete!")
                     
-                    st.pyplot(fig)
+                    col_res1, col_res2 = st.columns([1, 1])
+                    with col_res1:
+                        m1, m2, m3 = st.columns(3)
+                        m1.metric("Slabs Needed", slabs_used)
+                        m2.metric("Total Cost", f"${total_mat_cost:,.2f}")
+                        m3.metric("Waste", f"{waste_pct:.1f}%")
+                    
+                    with col_res2:
+                        st.download_button(
+                            label="📄 Download Printable Job Ticket (HTML)",
+                            data=html_ticket,
+                            file_name="stone_job_ticket.html",
+                            mime="text/html",
+                            help="Download this file, open it, and press Ctrl+P to save as PDF."
+                        )
+
+                    st.divider()
+
+                    # --- VISUALIZER ---
+                    offset_x = slab_trim
+                    offset_y = slab_trim
+
+                    for i, b in enumerate(packer.bins):
+                        st.subheader(f"Slab #{i+1}")
+                        
+                        fig, ax = plt.subplots(figsize=(10, 5))
+                        
+                        # 1. Draw Full Slab (Black Border)
+                        ax.add_patch(patches.Rectangle((0, 0), slab_l, slab_w, linewidth=2, edgecolor='black', facecolor='#eeeeee'))
+                        
+                        # 2. Draw Safe Zone (Red Dashed)
+                        ax.add_patch(patches.Rectangle((offset_x, offset_y), usable_l, usable_w, 
+                                                       linewidth=1, edgecolor='red', linestyle='--', facecolor='none', label="Safe Zone"))
+
+                        # 3. Draw Pieces
+                        for (rx, ry, rw, rh, rid) in b.rects:
+                            # Shift to global coords
+                            draw_x = rx + offset_x + kerf
+                            draw_y = ry + offset_y + kerf
+                            
+                            # Shrink back to actual stone size (remove kerf)
+                            draw_w = rw - (2 * kerf)
+                            draw_h = rh - (2 * kerf)
+                            
+                            ax.add_patch(patches.Rectangle((draw_x, draw_y), draw_w, draw_h, linewidth=1, edgecolor='green', facecolor='#d1e7dd'))
+                            
+                            cx = draw_x + draw_w/2
+                            cy = draw_y + draw_h/2
+                            
+                            font_size = 8
+                            if draw_w < 20 or draw_h < 10: font_size = 6
+                            
+                            ax.text(cx, cy, f"{rid}\n{draw_w:.1f}x{draw_h:.1f}", 
+                                    ha='center', va='center', fontsize=font_size, color='black')
+
+                        ax.set_xlim(0, slab_l)
+                        ax.set_ylim(0, slab_w)
+                        ax.set_aspect('equal')
+                        plt.axis('off')
+                        
+                        st.pyplot(fig)
