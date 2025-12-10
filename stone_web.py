@@ -47,7 +47,6 @@ class StonePacker:
         self.bins = []
 
     def pack(self, pieces):
-        # Sort by area
         pieces.sort(key=lambda x: x[0] * x[1], reverse=True)
         for p in pieces:
             pl, pw, pid, rot = p
@@ -66,7 +65,11 @@ class StonePacker:
 # ==========================================
 #   HTML TICKET GENERATOR
 # ==========================================
-def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slabs_used, total_cost, waste_pct):
+def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, slabs_used, total_cost, waste_pct):
+    # Calculate usable dimensions for drawing the red box
+    safe_w = slab_l - (2 * slab_trim)
+    safe_h = slab_w - (2 * slab_trim)
+    
     html = f"""
     <html>
     <head>
@@ -81,6 +84,8 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slabs_used,
             th {{ background-color: #f2f2f2; }}
             svg {{ background: #fafafa; border: 1px solid #000; }}
             rect.piece {{ fill: #d1e7dd; stroke: #28a745; stroke-width: 1; }}
+            /* Red dashed line for safe zone */
+            rect.safe {{ fill: none; stroke: red; stroke-width: 0.5; stroke-dasharray: 5,5; }}
             text {{ font-family: Arial; font-size: 0.4px; text-anchor: middle; dominant-baseline: middle; }}
             @media print {{ .no-print {{ display: none; }} }}
         </style>
@@ -96,7 +101,8 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slabs_used,
             <strong>Slabs Needed:</strong> {slabs_used} <br>
             <strong>Total Cost:</strong> ${total_cost:,.2f} <br>
             <strong>Waste:</strong> {waste_pct:.1f}% <br>
-            <strong>Slab Size:</strong> {slab_l} x {slab_w} in
+            <strong>Full Slab:</strong> {slab_l} x {slab_w} in <br>
+            <strong>Edge Trim:</strong> {slab_trim} in
         </div>
 
         <h3>Cut List</h3>
@@ -115,13 +121,19 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slabs_used,
             <h4>Slab #{i+1}</h4>
             <svg viewBox="0 0 {slab_l} {slab_w}" width="100%">
                 <rect x="0" y="0" width="{slab_l}" height="{slab_w}" fill="none" stroke="black" stroke-width="0.2"/>
+                
+                <rect x="{slab_trim}" y="{slab_trim}" width="{safe_w}" height="{safe_h}" class="safe"/>
         """
         for (rx, ry, rw, rh, rid) in b.rects:
+            # Shift pieces by trim to place them inside the safe zone
+            draw_x = rx + slab_trim
+            draw_y = ry + slab_trim
+            
             font_size = min(rw, rh) * 0.2
             if font_size > 3: font_size = 3
             html += f"""
-                <rect class="piece" x="{rx}" y="{ry}" width="{rw}" height="{rh}" />
-                <text x="{rx + rw/2}" y="{ry + rh/2}" font-size="{font_size}">{rid} ({rw:.0f}x{rh:.0f})</text>
+                <rect class="piece" x="{draw_x}" y="{draw_y}" width="{rw}" height="{rh}" />
+                <text x="{draw_x + rw/2}" y="{draw_y + rh/2}" font-size="{font_size}">{rid} ({rw:.0f}x{rh:.0f})</text>
             """
         html += "</svg></div>"
     html += "</body></html>"
@@ -133,15 +145,12 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slabs_used,
 st.set_page_config(page_title="Stone Estimator Pro", layout="wide")
 st.title("🪨 Stone Slab Estimator Pro")
 
-# --- STATE INITIALIZATION ---
 if 'pieces' not in st.session_state: st.session_state['pieces'] = []
 if 'editing_idx' not in st.session_state: st.session_state['editing_idx'] = None
 
-# --- SIDEBAR: JOB MANAGEMENT ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.header("📂 Job Management")
-    
-    # LOAD JOB
     uploaded_file = st.file_uploader("Load Saved Job (.json)", type="json")
     if uploaded_file is not None:
         try:
@@ -151,14 +160,12 @@ with st.sidebar:
             st.session_state['material_load'] = data.get('material', "")
             st.session_state['slab_l_load'] = data.get('slab_l', 130.0)
             st.session_state['slab_w_load'] = data.get('slab_w', 65.0)
-            st.success(f"Loaded Job: {data.get('job_name')}")
+            st.success(f"Loaded: {data.get('job_name')}")
         except:
             st.error("Invalid file.")
 
     st.divider()
     st.header("1. Job Settings")
-    
-    # Use loaded values if available, otherwise defaults
     default_job = st.session_state.get('job_name_load', "Smith Kitchen")
     default_mat = st.session_state.get('material_load', "White Quartz")
     default_l = st.session_state.get('slab_l_load', 130.0)
@@ -175,32 +182,19 @@ with st.sidebar:
     slab_trim = st.number_input("Edge Trim (in)", value=1.0)
     kerf = st.number_input("Saw Kerf (in)", value=0.125, format="%.3f")
 
-    # SAVE JOB BUTTON
-    job_data = {
-        "job_name": job_name,
-        "material": material,
-        "slab_l": slab_l,
-        "slab_w": slab_w,
-        "pieces": st.session_state['pieces']
-    }
-    json_data = json.dumps(job_data, indent=2)
-    st.download_button(
-        label="💾 Save Job to File",
-        data=json_data,
-        file_name=f"{job_name.replace(' ', '_')}_Estimate.json",
-        mime="application/json"
-    )
+    job_data = {"job_name": job_name, "material": material, "slab_l": slab_l, "slab_w": slab_w, "pieces": st.session_state['pieces']}
+    st.download_button("💾 Save Job to File", json.dumps(job_data, indent=2), f"{job_name.replace(' ', '_')}.json", "application/json")
     
     if st.button("Clear All"):
         st.session_state['pieces'] = []
         st.session_state['editing_idx'] = None
         st.rerun()
 
-# --- EDIT FORM ---
+# --- EDIT ---
 if st.session_state['editing_idx'] is not None:
     idx = st.session_state['editing_idx']
     p = st.session_state['pieces'][idx]
-    st.info(f"✏️ Editing Piece: {p['name']}")
+    st.info(f"✏️ Editing: {p['name']}")
     with st.form("edit"):
         c1, c2, c3, c4, c5 = st.columns([2,2,1,1,1])
         nr = c1.text_input("Room", p['room'])
@@ -213,7 +207,7 @@ if st.session_state['editing_idx'] is not None:
             st.session_state['editing_idx'] = None
             st.rerun()
 
-# --- ADD PIECES ---
+# --- ADD ---
 st.subheader(f"2. Add Pieces for: {material}")
 c1, c2, c3, c4, c5, c6, c7 = st.columns([2, 2, 1.5, 1.5, 1, 1, 1])
 room = c1.text_input("Room", "Kitchen", key="ar")
@@ -292,15 +286,18 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
                 col1.metric("Total Cost", f"${tot_cost:,.2f}")
                 col1.metric("Waste", f"{waste:.1f}%")
                 
-                html = generate_html_ticket(packer, job_name, material, slab_l, slab_w, slabs, tot_cost, waste)
+                html = generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, slabs, tot_cost, waste)
                 col2.download_button("📄 Download Job Ticket", html, "ticket.html", "text/html")
                 
                 st.divider()
                 for i, b in enumerate(packer.bins):
                     st.subheader(f"Slab #{i+1}")
                     fig, ax = plt.subplots(figsize=(10, 5))
+                    # Draw Full Slab
                     ax.add_patch(patches.Rectangle((0, 0), slab_l, slab_w, facecolor='#eee', edgecolor='black'))
-                    ax.add_patch(patches.Rectangle((slab_trim, slab_trim), usable_l, usable_w, linestyle='--', edgecolor='red', fill=False))
+                    # Draw Red Safe Zone (Thicker & Clearly Visible)
+                    ax.add_patch(patches.Rectangle((slab_trim, slab_trim), usable_l, usable_w, linewidth=1.5, linestyle='--', edgecolor='red', facecolor='none'))
+                    
                     for (rx, ry, rw, rh, rid) in b.rects:
                         dx, dy = rx + slab_trim + kerf, ry + slab_trim + kerf
                         dw, dh = rw - (2*kerf), rh - (2*kerf)
