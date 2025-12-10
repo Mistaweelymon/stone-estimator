@@ -4,7 +4,7 @@ import matplotlib.patches as patches
 import json
 
 # ==========================================
-#   CUSTOM PACKING ENGINE (Guillotine Logic)
+#   CUSTOM PACKING ENGINE (Enhanced Logic)
 # ==========================================
 class SimpleBin:
     def __init__(self, width, height):
@@ -13,31 +13,55 @@ class SimpleBin:
         self.free_rects = [(0, 0, width, height)]
 
     def add_rect(self, width, height, rid, can_rotate):
-        best_rect_idx, best_short_side_fit = -1, float('inf')
+        best_rect_idx = -1
+        best_short_side_fit = float('inf')
         best_orientation = (width, height)
         orientations = [(width, height)]
         if can_rotate: orientations.append((height, width))
 
+        # 1. Find Best Fit
         for i, free in enumerate(self.free_rects):
             fx, fy, fw, fh = free
             for (test_w, test_h) in orientations:
                 if test_w <= fw and test_h <= fh:
-                    leftover_w, leftover_h = fw - test_w, fh - test_h
+                    leftover_w = fw - test_w
+                    leftover_h = fh - test_h
                     short_side = min(leftover_w, leftover_h)
                     if short_side < best_short_side_fit:
-                        best_short_side_fit, best_rect_idx, best_orientation = short_side, i, (test_w, test_h)
+                        best_short_side_fit = short_side
+                        best_rect_idx = i
+                        best_orientation = (test_w, test_h)
 
+        # 2. Place & Split
         if best_rect_idx != -1:
             fx, fy, fw, fh = self.free_rects.pop(best_rect_idx)
             final_w, final_h = best_orientation
             self.rects.append((fx, fy, final_w, final_h, rid))
-            rem_w, rem_h = fw - final_w, fh - final_h
-            if rem_w < rem_h:
+            
+            rem_w = fw - final_w
+            rem_h = fh - final_h
+            
+            # --- IMPROVED SPLIT LOGIC (Max Area) ---
+            # We calculate which split leaves the larger contiguous chunk.
+            # This prioritizes keeping the slab "whole" rather than chopping it up.
+            
+            # Option A: Split Horizontally (Top rect gets full width)
+            # Leaves: (rem_w x final_h) AND (fw x rem_h)
+            big_area_h = fw * rem_h
+            
+            # Option B: Split Vertically (Right rect gets full height)
+            # Leaves: (rem_w x fh) AND (final_w x rem_h)
+            big_area_v = rem_w * fh
+            
+            if big_area_h >= big_area_v:
+                # Horizontal Split (Better for long strips)
                 if rem_w > 0: self.free_rects.append((fx + final_w, fy, rem_w, final_h))
                 if rem_h > 0: self.free_rects.append((fx, fy + final_h, fw, rem_h))
             else:
+                # Vertical Split
                 if rem_w > 0: self.free_rects.append((fx + final_w, fy, rem_w, fh))
                 if rem_h > 0: self.free_rects.append((fx, fy + final_h, final_w, rem_h))
+                
             return True
         return False
 
@@ -47,6 +71,7 @@ class StonePacker:
         self.bins = []
 
     def pack(self, pieces):
+        # Sort by Area descending
         pieces.sort(key=lambda x: x[0] * x[1], reverse=True)
         for p in pieces:
             pl, pw, pid, rot = p
@@ -65,8 +90,7 @@ class StonePacker:
 # ==========================================
 #   HTML TICKET GENERATOR
 # ==========================================
-def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, slabs_used, total_cost, waste_pct):
-    # Calculate usable dimensions for drawing the red box
+def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, kerf, slabs_used, total_cost, waste_pct):
     safe_w = slab_l - (2 * slab_trim)
     safe_h = slab_w - (2 * slab_trim)
     
@@ -84,7 +108,6 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
             th {{ background-color: #f2f2f2; }}
             svg {{ background: #fafafa; border: 1px solid #000; }}
             rect.piece {{ fill: #d1e7dd; stroke: #28a745; stroke-width: 1; }}
-            /* Red dashed line for safe zone */
             rect.safe {{ fill: none; stroke: red; stroke-width: 0.5; stroke-dasharray: 5,5; }}
             text {{ font-family: Arial; font-size: 0.4px; text-anchor: middle; dominant-baseline: middle; }}
             @media print {{ .no-print {{ display: none; }} }}
@@ -101,8 +124,7 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
             <strong>Slabs Needed:</strong> {slabs_used} <br>
             <strong>Total Cost:</strong> ${total_cost:,.2f} <br>
             <strong>Waste:</strong> {waste_pct:.1f}% <br>
-            <strong>Full Slab:</strong> {slab_l} x {slab_w} in <br>
-            <strong>Edge Trim:</strong> {slab_trim} in
+            <strong>Full Slab:</strong> {slab_l} x {slab_w} in (Trim: {slab_trim}")
         </div>
 
         <h3>Cut List</h3>
@@ -111,7 +133,9 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
     """
     for b in packer.bins:
         for (rx, ry, rw, rh, rid) in b.rects:
-            html += f"<tr><td>{rid}</td><td>{rw:.1f} x {rh:.1f}</td></tr>"
+            final_l = rw - (2*kerf)
+            final_w = rh - (2*kerf)
+            html += f"<tr><td>{rid}</td><td>{final_l:.3f} x {final_w:.3f}</td></tr>"
 
     html += "</table><h3>Slab Layouts</h3>"
 
@@ -121,19 +145,20 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
             <h4>Slab #{i+1}</h4>
             <svg viewBox="0 0 {slab_l} {slab_w}" width="100%">
                 <rect x="0" y="0" width="{slab_l}" height="{slab_w}" fill="none" stroke="black" stroke-width="0.2"/>
-                
                 <rect x="{slab_trim}" y="{slab_trim}" width="{safe_w}" height="{safe_h}" class="safe"/>
         """
         for (rx, ry, rw, rh, rid) in b.rects:
-            # Shift pieces by trim to place them inside the safe zone
-            draw_x = rx + slab_trim
-            draw_y = ry + slab_trim
+            draw_x = rx + slab_trim + kerf
+            draw_y = ry + slab_trim + kerf
+            draw_w = rw - (2*kerf)
+            draw_h = rh - (2*kerf)
             
-            font_size = min(rw, rh) * 0.2
+            font_size = min(draw_w, draw_h) * 0.2
             if font_size > 3: font_size = 3
+            
             html += f"""
-                <rect class="piece" x="{draw_x}" y="{draw_y}" width="{rw}" height="{rh}" />
-                <text x="{draw_x + rw/2}" y="{draw_y + rh/2}" font-size="{font_size}">{rid} ({rw:.0f}x{rh:.0f})</text>
+                <rect class="piece" x="{draw_x}" y="{draw_y}" width="{draw_w}" height="{draw_h}" />
+                <text x="{draw_x + draw_w/2}" y="{draw_y + draw_h/2}" font-size="{font_size}">{rid} ({draw_w:.1f}x{draw_h:.1f})</text>
             """
         html += "</svg></div>"
     html += "</body></html>"
@@ -286,7 +311,7 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
                 col1.metric("Total Cost", f"${tot_cost:,.2f}")
                 col1.metric("Waste", f"{waste:.1f}%")
                 
-                html = generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, slabs, tot_cost, waste)
+                html = generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, kerf, slabs, tot_cost, waste)
                 col2.download_button("📄 Download Job Ticket", html, "ticket.html", "text/html")
                 
                 st.divider()
@@ -295,7 +320,7 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
                     fig, ax = plt.subplots(figsize=(10, 5))
                     # Draw Full Slab
                     ax.add_patch(patches.Rectangle((0, 0), slab_l, slab_w, facecolor='#eee', edgecolor='black'))
-                    # Draw Red Safe Zone (Thicker & Clearly Visible)
+                    # Draw Safe Zone (Red Dotted Line)
                     ax.add_patch(patches.Rectangle((slab_trim, slab_trim), usable_l, usable_w, linewidth=1.5, linestyle='--', edgecolor='red', facecolor='none'))
                     
                     for (rx, ry, rw, rh, rid) in b.rects:
