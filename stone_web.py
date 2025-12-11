@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import json
 import collections
+import pandas as pd
 
 # ==========================================
 #   CUSTOM PACKING ENGINE (Guillotine + Row Priority)
@@ -71,7 +72,7 @@ class StonePacker:
         return True, "Success"
 
 # ==========================================
-#   HTML TICKET GENERATOR (With SF Calcs)
+#   HTML TICKET GENERATOR
 # ==========================================
 def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, kerf, slabs_used, total_cost, waste_pct):
     safe_w = slab_l - (2 * slab_trim)
@@ -222,7 +223,7 @@ with st.sidebar:
         st.session_state['editing_idx'] = None
         st.rerun()
 
-# --- EDIT (Updated with Rotation Checkbox) ---
+# --- EDIT ---
 if st.session_state['editing_idx'] is not None:
     idx = st.session_state['editing_idx']
     p = st.session_state['pieces'][idx]
@@ -234,7 +235,7 @@ if st.session_state['editing_idx'] is not None:
         nl = c3.number_input("L", value=p['l'])
         nw = c4.number_input("W", value=p['w'])
         nq = c5.number_input("Qty", value=p['qty'])
-        nrot = c6.checkbox("Rotate?", value=p['rot']) # ADDED THIS CHECKBOX
+        nrot = c6.checkbox("Rotate?", value=p['rot'])
         
         if st.form_submit_button("Update"):
             st.session_state['pieces'][idx] = {"room": nr, "name": nn, "l": nl, "w": nw, "qty": nq, "rot": nrot}
@@ -260,8 +261,7 @@ if st.session_state['pieces']:
     st.write("### Cut List")
     for i, p in enumerate(st.session_state['pieces']):
         c1, c2, c3 = st.columns([6, 1, 1])
-        rot_status = " (Rotatable)" if p['rot'] else ""
-        c1.write(f"**{p['qty']}x** {p['room']} - {p['name']} ({p['l']} x {p['w']}){rot_status}")
+        c1.write(f"**{p['qty']}x** {p['room']} - {p['name']} ({p['l']} x {p['w']})")
         if c2.button("Edit", key=f"e{i}"): st.session_state['editing_idx'] = i; st.rerun()
         if c3.button("❌", key=f"d{i}"): st.session_state['pieces'].pop(i); st.rerun()
 
@@ -328,8 +328,10 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
                 c3.metric("Waste", f"{waste:.1f}%")
                 
                 st.write("### 🏠 Room Breakdown")
-                room_data = [{"Room": r, "Sq Ft": f"{s:.2f}"} for r, s in room_sf.items()]
-                st.table(room_data)
+                # CLEAN TABLE (No Index Column)
+                df_rooms = pd.DataFrame(room_sf.items(), columns=["Room", "Sq Ft"])
+                df_rooms["Sq Ft"] = df_rooms["Sq Ft"].map("{:.2f}".format)
+                st.dataframe(df_rooms, hide_index=True)
 
                 html = generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, kerf, slabs, tot_cost, waste)
                 st.download_button("📄 Download Job Ticket", html, "ticket.html", "text/html")
