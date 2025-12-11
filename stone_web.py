@@ -4,6 +4,7 @@ import matplotlib.patches as patches
 import json
 import collections
 import pandas as pd
+import math  # Added for ceiling calculation
 
 # ==========================================
 #   CUSTOM PACKING ENGINE (Guillotine + Row Priority)
@@ -37,7 +38,6 @@ class SimpleBin:
             
             rem_w, rem_h = fw - final_w, fh - final_h
             
-            # Row Priority Split Logic
             force_horizontal = (final_h < 10) 
             split_horizontal = True if force_horizontal else ((fw * rem_h) >= (rem_w * fh))
 
@@ -223,37 +223,45 @@ with st.sidebar:
         st.session_state['editing_idx'] = None
         st.rerun()
 
-# --- EDIT ---
+# --- EDIT FORM ---
 if st.session_state['editing_idx'] is not None:
     idx = st.session_state['editing_idx']
     p = st.session_state['pieces'][idx]
     st.info(f"✏️ Editing: {p['name']}")
     with st.form("edit"):
-        c1, c2, c3, c4, c5, c6 = st.columns([2, 2, 1, 1, 1, 1])
+        c1, c2, c3, c4, c5, c6, c7 = st.columns([2, 2, 1, 1, 1, 1, 1])
         nr = c1.text_input("Room", p['room'])
         nn = c2.text_input("Name", p['name'])
         nl = c3.number_input("L", value=p['l'])
         nw = c4.number_input("W", value=p['w'])
         nq = c5.number_input("Qty", value=p['qty'])
         nrot = c6.checkbox("Rotate?", value=p['rot'])
+        # New "Center Seam" Checkbox
+        nsplit = c7.checkbox("Center Seam?", value=p.get('split', False))
         
         if st.form_submit_button("Update"):
-            st.session_state['pieces'][idx] = {"room": nr, "name": nn, "l": nl, "w": nw, "qty": nq, "rot": nrot}
+            st.session_state['pieces'][idx] = {
+                "room": nr, "name": nn, "l": nl, "w": nw, "qty": nq, "rot": nrot, "split": nsplit
+            }
             st.session_state['editing_idx'] = None
             st.rerun()
 
-# --- ADD ---
+# --- ADD FORM ---
 st.subheader(f"2. Add Pieces for: {material}")
-c1, c2, c3, c4, c5, c6, c7 = st.columns([2, 2, 1.5, 1.5, 1, 1, 1])
+c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([2, 2, 1.2, 1.2, 1, 1, 1, 1])
 room = c1.text_input("Room", "Kitchen", key="ar")
 name = c2.text_input("Name", "Counter", key="an")
 l = c3.number_input("Length", 0.0, key="al")
 w = c4.number_input("Width", 0.0, key="aw")
 qty = c5.number_input("Qty", 1, key="aq")
 rot = c6.checkbox("Rotate?", key="arot")
-if c7.button("➕ Add"):
+split = c7.checkbox("Center Seam?", key="asplit", help="Split equally (50/50) if too long for slab")
+
+if c8.button("➕ Add"):
     if l > 0 and w > 0:
-        st.session_state['pieces'].append({"room": room, "name": name, "l": l, "w": w, "qty": qty, "rot": rot})
+        st.session_state['pieces'].append({
+            "room": room, "name": name, "l": l, "w": w, "qty": qty, "rot": rot, "split": split
+        })
         st.rerun()
 
 # --- LIST ---
@@ -261,7 +269,14 @@ if st.session_state['pieces']:
     st.write("### Cut List")
     for i, p in enumerate(st.session_state['pieces']):
         c1, c2, c3 = st.columns([6, 1, 1])
-        c1.write(f"**{p['qty']}x** {p['room']} - {p['name']} ({p['l']} x {p['w']})")
+        
+        # Build status string
+        flags = []
+        if p['rot']: flags.append("Rotatable")
+        if p.get('split'): flags.append("Center Seam")
+        flag_str = f" ({', '.join(flags)})" if flags else ""
+        
+        c1.write(f"**{p['qty']}x** {p['room']} - {p['name']} ({p['l']} x {p['w']}){flag_str}")
         if c2.button("Edit", key=f"e{i}"): st.session_state['editing_idx'] = i; st.rerun()
         if c3.button("❌", key=f"d{i}"): st.session_state['pieces'].pop(i); st.rerun()
 
@@ -284,16 +299,34 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
             if not p['rot'] and p_tot_w > usable_w:
                 error = f"Piece '{p['name']}' too wide."
                 break
+                
             for _ in range(p['qty']):
-                rem = p['l']
+                max_cut = usable_l - (2*kerf)
+                
+                # --- NEW SEAM LOGIC ---
                 parts = []
-                while rem > 0:
-                    max_cut = usable_l - (2*kerf)
-                    cut = min(rem, max_cut)
-                    fut = rem - cut
-                    if 0 < fut < 25.0: cut -= (25.0 - fut)
-                    parts.append(cut)
-                    rem -= cut
+                
+                # 1. Does it fit? No cut needed.
+                if p['l'] <= max_cut:
+                    parts.append(p['l'])
+                else:
+                    # It needs seaming. Check preference.
+                    if p.get('split', False):
+                        # CENTER SEAM LOGIC (Equal Parts)
+                        # How many slabs deep is this piece?
+                        num_parts = math.ceil(p['l'] / max_cut)
+                        equal_len = p['l'] / num_parts
+                        parts = [equal_len] * num_parts
+                    else:
+                        # STANDARD LOGIC (Maximize First Piece)
+                        rem = p['l']
+                        while rem > 0:
+                            cut = min(rem, max_cut)
+                            fut = rem - cut
+                            if 0 < fut < 25.0: cut -= (25.0 - fut)
+                            parts.append(cut)
+                            rem -= cut
+                
                 for idx, plen in enumerate(parts):
                     pid = f"{p['room']}: {p['name']}" + (f" ({idx+1}/{len(parts)})" if len(parts)>1 else "")
                     packing_list.append((plen + (2*kerf), p['w'] + (2*kerf), pid, p['rot']))
@@ -309,7 +342,7 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
                 waste = ((slabs * slab_l * slab_w - total_area) / (slabs * slab_l * slab_w) * 100)
                 tot_cost = slabs * cost
                 
-                # --- LIVE STATS ---
+                # Stats
                 room_sf = collections.defaultdict(float)
                 final_stone_sf = 0.0
                 for b in packer.bins:
@@ -328,7 +361,6 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
                 c3.metric("Waste", f"{waste:.1f}%")
                 
                 st.write("### 🏠 Room Breakdown")
-                # CLEAN TABLE (No Index Column)
                 df_rooms = pd.DataFrame(room_sf.items(), columns=["Room", "Sq Ft"])
                 df_rooms["Sq Ft"] = df_rooms["Sq Ft"].map("{:.2f}".format)
                 st.dataframe(df_rooms, hide_index=True)
