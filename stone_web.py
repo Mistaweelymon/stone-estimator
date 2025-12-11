@@ -2,9 +2,10 @@ import streamlit as st
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import json
+import collections
 
 # ==========================================
-#   CUSTOM PACKING ENGINE (Enhanced Logic)
+#   CUSTOM PACKING ENGINE (Guillotine + Row Priority)
 # ==========================================
 class SimpleBin:
     def __init__(self, width, height):
@@ -14,54 +15,37 @@ class SimpleBin:
 
     def add_rect(self, width, height, rid, can_rotate):
         best_rect_idx = -1
-        best_short_side_fit = float('inf')
+        best_score = float('inf')
         best_orientation = (width, height)
         orientations = [(width, height)]
         if can_rotate: orientations.append((height, width))
 
-        # 1. Find Best Fit
         for i, free in enumerate(self.free_rects):
             fx, fy, fw, fh = free
             for (test_w, test_h) in orientations:
-                if test_w <= fw and test_h <= fh:
-                    leftover_w = fw - test_w
-                    leftover_h = fh - test_h
+                if test_w <= fw + 0.001 and test_h <= fh + 0.001:
+                    leftover_w, leftover_h = fw - test_w, fh - test_h
                     short_side = min(leftover_w, leftover_h)
-                    if short_side < best_short_side_fit:
-                        best_short_side_fit = short_side
-                        best_rect_idx = i
-                        best_orientation = (test_w, test_h)
+                    if short_side < best_score:
+                        best_score, best_rect_idx, best_orientation = short_side, i, (test_w, test_h)
 
-        # 2. Place & Split
         if best_rect_idx != -1:
             fx, fy, fw, fh = self.free_rects.pop(best_rect_idx)
             final_w, final_h = best_orientation
             self.rects.append((fx, fy, final_w, final_h, rid))
             
-            rem_w = fw - final_w
-            rem_h = fh - final_h
+            rem_w, rem_h = fw - final_w, fh - final_h
             
-            # --- IMPROVED SPLIT LOGIC (Max Area) ---
-            # We calculate which split leaves the larger contiguous chunk.
-            # This prioritizes keeping the slab "whole" rather than chopping it up.
-            
-            # Option A: Split Horizontally (Top rect gets full width)
-            # Leaves: (rem_w x final_h) AND (fw x rem_h)
-            big_area_h = fw * rem_h
-            
-            # Option B: Split Vertically (Right rect gets full height)
-            # Leaves: (rem_w x fh) AND (final_w x rem_h)
-            big_area_v = rem_w * fh
-            
-            if big_area_h >= big_area_v:
-                # Horizontal Split (Better for long strips)
+            # Row Priority Split Logic
+            force_horizontal = (final_h < 10) 
+            split_horizontal = True if force_horizontal else ((fw * rem_h) >= (rem_w * fh))
+
+            if split_horizontal:
                 if rem_w > 0: self.free_rects.append((fx + final_w, fy, rem_w, final_h))
                 if rem_h > 0: self.free_rects.append((fx, fy + final_h, fw, rem_h))
             else:
-                # Vertical Split
                 if rem_w > 0: self.free_rects.append((fx + final_w, fy, rem_w, fh))
                 if rem_h > 0: self.free_rects.append((fx, fy + final_h, final_w, rem_h))
-                
             return True
         return False
 
@@ -71,7 +55,6 @@ class StonePacker:
         self.bins = []
 
     def pack(self, pieces):
-        # Sort by Area descending
         pieces.sort(key=lambda x: x[0] * x[1], reverse=True)
         for p in pieces:
             pl, pw, pid, rot = p
@@ -88,12 +71,37 @@ class StonePacker:
         return True, "Success"
 
 # ==========================================
-#   HTML TICKET GENERATOR
+#   HTML TICKET GENERATOR (With SF Calcs)
 # ==========================================
 def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, kerf, slabs_used, total_cost, waste_pct):
     safe_w = slab_l - (2 * slab_trim)
     safe_h = slab_w - (2 * slab_trim)
     
+    # --- CALCULATE SF STATS ---
+    room_sf = collections.defaultdict(float)
+    total_stone_sf = 0.0
+    
+    # We parse the room name from the Piece ID (e.g., "Kitchen: Island")
+    # This loop calculates stats and builds the table rows at the same time
+    cut_list_rows = ""
+    for b in packer.bins:
+        for (rx, ry, rw, rh, rid) in b.rects:
+            final_l = rw - (2*kerf)
+            final_w = rh - (2*kerf)
+            piece_sf = (final_l * final_w) / 144.0
+            total_stone_sf += piece_sf
+            
+            # Parse Room Name (Everything before the first ":")
+            room_name = rid.split(":")[0] if ":" in rid else "Unassigned"
+            room_sf[room_name] += piece_sf
+            
+            cut_list_rows += f"<tr><td>{rid}</td><td>{final_l:.1f} x {final_w:.1f}</td><td>{piece_sf:.2f} sq ft</td></tr>"
+
+    # Build Room Summary Table HTML
+    room_rows = ""
+    for r, area in room_sf.items():
+        room_rows += f"<tr><td>{r}</td><td>{area:.2f} sq ft</td></tr>"
+
     html = f"""
     <html>
     <head>
@@ -110,6 +118,8 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
             rect.piece {{ fill: #d1e7dd; stroke: #28a745; stroke-width: 1; }}
             rect.safe {{ fill: none; stroke: red; stroke-width: 0.5; stroke-dasharray: 5,5; }}
             text {{ font-family: Arial; font-size: 0.4px; text-anchor: middle; dominant-baseline: middle; }}
+            .stats-container {{ display: flex; gap: 20px; }}
+            .stats-box {{ flex: 1; border: 1px solid #ddd; padding: 10px; }}
             @media print {{ .no-print {{ display: none; }} }}
         </style>
     </head>
@@ -121,23 +131,30 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
         
         <div class="summary">
             <strong>Material:</strong> {material} <br>
-            <strong>Slabs Needed:</strong> {slabs_used} <br>
-            <strong>Total Cost:</strong> ${total_cost:,.2f} <br>
-            <strong>Waste:</strong> {waste_pct:.1f}% <br>
-            <strong>Full Slab:</strong> {slab_l} x {slab_w} in (Trim: {slab_trim}")
+            <strong>Total Finished Stone:</strong> {total_stone_sf:.2f} sq ft <br>
+            <strong>Slabs Needed:</strong> {slabs_used} (${total_cost:,.2f}) <br>
+            <strong>Waste Factor:</strong> {waste_pct:.1f}%
         </div>
 
-        <h3>Cut List</h3>
-        <table>
-            <tr><th>Piece ID</th><th>Dimensions (Final)</th></tr>
-    """
-    for b in packer.bins:
-        for (rx, ry, rw, rh, rid) in b.rects:
-            final_l = rw - (2*kerf)
-            final_w = rh - (2*kerf)
-            html += f"<tr><td>{rid}</td><td>{final_l:.3f} x {final_w:.3f}</td></tr>"
+        <div class="stats-container">
+            <div class="stats-box">
+                <h3>Room Breakdown</h3>
+                <table>
+                    <tr><th>Room</th><th>Total Sq Ft</th></tr>
+                    {room_rows}
+                </table>
+            </div>
+            <div class="stats-box">
+                <h3>Cut List</h3>
+                <table>
+                    <tr><th>Piece ID</th><th>Dimensions</th><th>Sq Ft</th></tr>
+                    {cut_list_rows}
+                </table>
+            </div>
+        </div>
 
-    html += "</table><h3>Slab Layouts</h3>"
+        <h3>Slab Layouts</h3>
+    """
 
     for i, b in enumerate(packer.bins):
         html += f"""
@@ -152,13 +169,12 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
             draw_y = ry + slab_trim + kerf
             draw_w = rw - (2*kerf)
             draw_h = rh - (2*kerf)
-            
-            font_size = min(draw_w, draw_h) * 0.2
+            font_size = min(draw_w, draw_h) * 0.25
             if font_size > 3: font_size = 3
             
             html += f"""
                 <rect class="piece" x="{draw_x}" y="{draw_y}" width="{draw_w}" height="{draw_h}" />
-                <text x="{draw_x + draw_w/2}" y="{draw_y + draw_h/2}" font-size="{font_size}">{rid} ({draw_w:.1f}x{draw_h:.1f})</text>
+                <text x="{draw_x + draw_w/2}" y="{draw_y + draw_h/2}" font-size="{font_size}">{rid} ({draw_w:.0f}x{draw_h:.0f})</text>
             """
         html += "</svg></div>"
     html += "</body></html>"
@@ -186,8 +202,7 @@ with st.sidebar:
             st.session_state['slab_l_load'] = data.get('slab_l', 130.0)
             st.session_state['slab_w_load'] = data.get('slab_w', 65.0)
             st.success(f"Loaded: {data.get('job_name')}")
-        except:
-            st.error("Invalid file.")
+        except: st.error("Invalid file.")
 
     st.divider()
     st.header("1. Job Settings")
@@ -198,18 +213,15 @@ with st.sidebar:
 
     job_name = st.text_input("Job Name", value=default_job)
     material = st.text_input("Stone / Material", value=default_mat)
-    
     col_s1, col_s2 = st.columns(2)
     with col_s1: slab_l = st.number_input("Slab Length", value=default_l)
     with col_s2: slab_w = st.number_input("Slab Width", value=default_w)
-    
     cost = st.number_input("Cost per Slab ($)", value=0.0)
     slab_trim = st.number_input("Edge Trim (in)", value=1.0)
     kerf = st.number_input("Saw Kerf (in)", value=0.125, format="%.3f")
 
     job_data = {"job_name": job_name, "material": material, "slab_l": slab_l, "slab_w": slab_w, "pieces": st.session_state['pieces']}
     st.download_button("💾 Save Job to File", json.dumps(job_data, indent=2), f"{job_name.replace(' ', '_')}.json", "application/json")
-    
     if st.button("Clear All"):
         st.session_state['pieces'] = []
         st.session_state['editing_idx'] = None
@@ -252,12 +264,8 @@ if st.session_state['pieces']:
     for i, p in enumerate(st.session_state['pieces']):
         c1, c2, c3 = st.columns([6, 1, 1])
         c1.write(f"**{p['qty']}x** {p['room']} - {p['name']} ({p['l']} x {p['w']})")
-        if c2.button("Edit", key=f"e{i}"):
-            st.session_state['editing_idx'] = i
-            st.rerun()
-        if c3.button("❌", key=f"d{i}"):
-            st.session_state['pieces'].pop(i)
-            st.rerun()
+        if c2.button("Edit", key=f"e{i}"): st.session_state['editing_idx'] = i; st.rerun()
+        if c3.button("❌", key=f"d{i}"): st.session_state['pieces'].pop(i); st.rerun()
 
 # --- CALCULATE ---
 if st.button("🚀 CALCULATE LAYOUT", type="primary"):
@@ -278,7 +286,6 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
             if not p['rot'] and p_tot_w > usable_w:
                 error = f"Piece '{p['name']}' too wide."
                 break
-                
             for _ in range(p['qty']):
                 rem = p['l']
                 parts = []
@@ -289,7 +296,6 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
                     if 0 < fut < 25.0: cut -= (25.0 - fut)
                     parts.append(cut)
                     rem -= cut
-                
                 for idx, plen in enumerate(parts):
                     pid = f"{p['room']}: {p['name']}" + (f" ({idx+1}/{len(parts)})" if len(parts)>1 else "")
                     packing_list.append((plen + (2*kerf), p['w'] + (2*kerf), pid, p['rot']))
@@ -299,34 +305,60 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
         else:
             packer = StonePacker(usable_l, usable_w)
             success, msg = packer.pack(packing_list)
-            
             if not success: st.error(msg)
             else:
                 slabs = len(packer.bins)
                 waste = ((slabs * slab_l * slab_w - total_area) / (slabs * slab_l * slab_w) * 100)
                 tot_cost = slabs * cost
                 
-                st.success(f"Success! {slabs} Slabs of {material} Needed.")
-                col1, col2 = st.columns([1,1])
-                col1.metric("Total Cost", f"${tot_cost:,.2f}")
-                col1.metric("Waste", f"{waste:.1f}%")
+                # --- CALCULATE LIVE STATS FOR UI ---
+                room_sf = collections.defaultdict(float)
+                final_stone_sf = 0.0
                 
+                for b in packer.bins:
+                    for (rx, ry, rw, rh, rid) in b.rects:
+                        f_l = rw - (2*kerf)
+                        f_w = rh - (2*kerf)
+                        sf = (f_l * f_w) / 144.0
+                        final_stone_sf += sf
+                        r_name = rid.split(":")[0] if ":" in rid else "Other"
+                        room_sf[r_name] += sf
+
+                st.success(f"Success! {slabs} Slabs Needed.")
+                
+                # Top Stats
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Total Material Cost", f"${tot_cost:,.2f}")
+                c2.metric("Finished Stone", f"{final_stone_sf:.2f} sq ft")
+                c3.metric("Waste", f"{waste:.1f}%")
+                
+                # Room Breakdown Table in UI
+                st.write("### 🏠 Room Breakdown")
+                room_data = [{"Room": r, "Sq Ft": f"{s:.2f}"} for r, s in room_sf.items()]
+                st.table(room_data)
+
                 html = generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, kerf, slabs, tot_cost, waste)
-                col2.download_button("📄 Download Job Ticket", html, "ticket.html", "text/html")
+                st.download_button("📄 Download Job Ticket", html, "ticket.html", "text/html")
                 
                 st.divider()
                 for i, b in enumerate(packer.bins):
                     st.subheader(f"Slab #{i+1}")
                     fig, ax = plt.subplots(figsize=(10, 5))
-                    # Draw Full Slab
                     ax.add_patch(patches.Rectangle((0, 0), slab_l, slab_w, facecolor='#eee', edgecolor='black'))
-                    # Draw Safe Zone (Red Dotted Line)
                     ax.add_patch(patches.Rectangle((slab_trim, slab_trim), usable_l, usable_w, linewidth=1.5, linestyle='--', edgecolor='red', facecolor='none'))
                     
                     for (rx, ry, rw, rh, rid) in b.rects:
                         dx, dy = rx + slab_trim + kerf, ry + slab_trim + kerf
                         dw, dh = rw - (2*kerf), rh - (2*kerf)
                         ax.add_patch(patches.Rectangle((dx, dy), dw, dh, facecolor='#d1e7dd', edgecolor='green'))
-                        ax.text(dx + dw/2, dy + dh/2, f"{rid}\n{dw:.1f}x{dh:.1f}", ha='center', va='center', fontsize=7)
+                        
+                        # Label Rotation
+                        cx, cy = dx + dw/2, dy + dh/2
+                        lbl = f"{rid}\n{dw:.1f}x{dh:.1f}"
+                        rot_deg = 90 if dh > dw else 0
+                        font_size = 8
+                        if min(dw, dh) < 10: font_size = 6
+                        ax.text(cx, cy, lbl, ha='center', va='center', fontsize=font_size, rotation=rot_deg, color='black')
+                        
                     ax.set_xlim(0, slab_l); ax.set_ylim(0, slab_w); ax.set_aspect('equal'); plt.axis('off')
                     st.pyplot(fig)
