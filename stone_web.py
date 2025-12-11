@@ -4,7 +4,7 @@ import matplotlib.patches as patches
 import json
 import collections
 import pandas as pd
-import math  # Added for ceiling calculation
+import math
 
 # ==========================================
 #   CUSTOM PACKING ENGINE (Guillotine + Row Priority)
@@ -25,6 +25,7 @@ class SimpleBin:
         for i, free in enumerate(self.free_rects):
             fx, fy, fw, fh = free
             for (test_w, test_h) in orientations:
+                # Add tolerance for float errors
                 if test_w <= fw + 0.001 and test_h <= fh + 0.001:
                     leftover_w, leftover_h = fw - test_w, fh - test_h
                     short_side = min(leftover_w, leftover_h)
@@ -56,6 +57,7 @@ class StonePacker:
         self.bins = []
 
     def pack(self, pieces):
+        # Sort by Area Descending
         pieces.sort(key=lambda x: x[0] * x[1], reverse=True)
         for p in pieces:
             pl, pw, pid, rot = p
@@ -67,7 +69,7 @@ class StonePacker:
             if not placed:
                 new_bin = SimpleBin(self.slab_l, self.slab_w)
                 if not new_bin.add_rect(pl, pw, pid, rot):
-                    return False, f"Piece '{pid}' fits nowhere."
+                    return False, f"Piece '{pid}' ({pl:.2f}x{pw:.2f}) fits nowhere (Slab: {self.slab_l}x{self.slab_w})."
                 self.bins.append(new_bin)
         return True, "Success"
 
@@ -236,7 +238,6 @@ if st.session_state['editing_idx'] is not None:
         nw = c4.number_input("W", value=p['w'])
         nq = c5.number_input("Qty", value=p['qty'])
         nrot = c6.checkbox("Rotate?", value=p['rot'])
-        # New "Center Seam" Checkbox
         nsplit = c7.checkbox("Center Seam?", value=p.get('split', False))
         
         if st.form_submit_button("Update"):
@@ -269,8 +270,6 @@ if st.session_state['pieces']:
     st.write("### Cut List")
     for i, p in enumerate(st.session_state['pieces']):
         c1, c2, c3 = st.columns([6, 1, 1])
-        
-        # Build status string
         flags = []
         if p['rot']: flags.append("Rotatable")
         if p.get('split'): flags.append("Center Seam")
@@ -296,29 +295,31 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
 
         for p in st.session_state['pieces']:
             p_tot_w = p['w'] + (2 * kerf)
+            # Standard Width check
             if not p['rot'] and p_tot_w > usable_w:
-                error = f"Piece '{p['name']}' too wide."
+                error = f"Piece '{p['name']}' ({p['w']:.2f}\") is too wide for usable slab ({usable_w:.2f}\"). Rotation OFF."
                 break
-                
+            # Rotated check (if rot allowed, piece length becomes width)
+            if p['rot'] and min(p['l'], p['w']) + (2*kerf) > usable_w:
+                 error = f"Piece '{p['name']}' is too large to fit on the slab in any orientation."
+                 break
+
             for _ in range(p['qty']):
                 max_cut = usable_l - (2*kerf)
                 
-                # --- NEW SEAM LOGIC ---
                 parts = []
-                
                 # 1. Does it fit? No cut needed.
                 if p['l'] <= max_cut:
                     parts.append(p['l'])
                 else:
-                    # It needs seaming. Check preference.
+                    # Seaming needed
                     if p.get('split', False):
-                        # CENTER SEAM LOGIC (Equal Parts)
-                        # How many slabs deep is this piece?
+                        # Center Seam (Equal Parts)
                         num_parts = math.ceil(p['l'] / max_cut)
                         equal_len = p['l'] / num_parts
                         parts = [equal_len] * num_parts
                     else:
-                        # STANDARD LOGIC (Maximize First Piece)
+                        # Standard Seam (Max First)
                         rem = p['l']
                         while rem > 0:
                             cut = min(rem, max_cut)
@@ -342,7 +343,6 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
                 waste = ((slabs * slab_l * slab_w - total_area) / (slabs * slab_l * slab_w) * 100)
                 tot_cost = slabs * cost
                 
-                # Stats
                 room_sf = collections.defaultdict(float)
                 final_stone_sf = 0.0
                 for b in packer.bins:
