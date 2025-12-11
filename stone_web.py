@@ -77,12 +77,9 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
     safe_w = slab_l - (2 * slab_trim)
     safe_h = slab_w - (2 * slab_trim)
     
-    # --- CALCULATE SF STATS ---
     room_sf = collections.defaultdict(float)
     total_stone_sf = 0.0
     
-    # We parse the room name from the Piece ID (e.g., "Kitchen: Island")
-    # This loop calculates stats and builds the table rows at the same time
     cut_list_rows = ""
     for b in packer.bins:
         for (rx, ry, rw, rh, rid) in b.rects:
@@ -91,13 +88,11 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
             piece_sf = (final_l * final_w) / 144.0
             total_stone_sf += piece_sf
             
-            # Parse Room Name (Everything before the first ":")
             room_name = rid.split(":")[0] if ":" in rid else "Unassigned"
             room_sf[room_name] += piece_sf
             
             cut_list_rows += f"<tr><td>{rid}</td><td>{final_l:.1f} x {final_w:.1f}</td><td>{piece_sf:.2f} sq ft</td></tr>"
 
-    # Build Room Summary Table HTML
     room_rows = ""
     for r, area in room_sf.items():
         room_rows += f"<tr><td>{r}</td><td>{area:.2f} sq ft</td></tr>"
@@ -227,20 +222,22 @@ with st.sidebar:
         st.session_state['editing_idx'] = None
         st.rerun()
 
-# --- EDIT ---
+# --- EDIT (Updated with Rotation Checkbox) ---
 if st.session_state['editing_idx'] is not None:
     idx = st.session_state['editing_idx']
     p = st.session_state['pieces'][idx]
     st.info(f"✏️ Editing: {p['name']}")
     with st.form("edit"):
-        c1, c2, c3, c4, c5 = st.columns([2,2,1,1,1])
+        c1, c2, c3, c4, c5, c6 = st.columns([2, 2, 1, 1, 1, 1])
         nr = c1.text_input("Room", p['room'])
         nn = c2.text_input("Name", p['name'])
         nl = c3.number_input("L", value=p['l'])
         nw = c4.number_input("W", value=p['w'])
         nq = c5.number_input("Qty", value=p['qty'])
+        nrot = c6.checkbox("Rotate?", value=p['rot']) # ADDED THIS CHECKBOX
+        
         if st.form_submit_button("Update"):
-            st.session_state['pieces'][idx] = {"room": nr, "name": nn, "l": nl, "w": nw, "qty": nq, "rot": p['rot']}
+            st.session_state['pieces'][idx] = {"room": nr, "name": nn, "l": nl, "w": nw, "qty": nq, "rot": nrot}
             st.session_state['editing_idx'] = None
             st.rerun()
 
@@ -263,7 +260,8 @@ if st.session_state['pieces']:
     st.write("### Cut List")
     for i, p in enumerate(st.session_state['pieces']):
         c1, c2, c3 = st.columns([6, 1, 1])
-        c1.write(f"**{p['qty']}x** {p['room']} - {p['name']} ({p['l']} x {p['w']})")
+        rot_status = " (Rotatable)" if p['rot'] else ""
+        c1.write(f"**{p['qty']}x** {p['room']} - {p['name']} ({p['l']} x {p['w']}){rot_status}")
         if c2.button("Edit", key=f"e{i}"): st.session_state['editing_idx'] = i; st.rerun()
         if c3.button("❌", key=f"d{i}"): st.session_state['pieces'].pop(i); st.rerun()
 
@@ -311,10 +309,9 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
                 waste = ((slabs * slab_l * slab_w - total_area) / (slabs * slab_l * slab_w) * 100)
                 tot_cost = slabs * cost
                 
-                # --- CALCULATE LIVE STATS FOR UI ---
+                # --- LIVE STATS ---
                 room_sf = collections.defaultdict(float)
                 final_stone_sf = 0.0
-                
                 for b in packer.bins:
                     for (rx, ry, rw, rh, rid) in b.rects:
                         f_l = rw - (2*kerf)
@@ -325,14 +322,11 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
                         room_sf[r_name] += sf
 
                 st.success(f"Success! {slabs} Slabs Needed.")
-                
-                # Top Stats
                 c1, c2, c3 = st.columns(3)
                 c1.metric("Total Material Cost", f"${tot_cost:,.2f}")
                 c2.metric("Finished Stone", f"{final_stone_sf:.2f} sq ft")
                 c3.metric("Waste", f"{waste:.1f}%")
                 
-                # Room Breakdown Table in UI
                 st.write("### 🏠 Room Breakdown")
                 room_data = [{"Room": r, "Sq Ft": f"{s:.2f}"} for r, s in room_sf.items()]
                 st.table(room_data)
@@ -352,7 +346,6 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
                         dw, dh = rw - (2*kerf), rh - (2*kerf)
                         ax.add_patch(patches.Rectangle((dx, dy), dw, dh, facecolor='#d1e7dd', edgecolor='green'))
                         
-                        # Label Rotation
                         cx, cy = dx + dw/2, dy + dh/2
                         lbl = f"{rid}\n{dw:.1f}x{dh:.1f}"
                         rot_deg = 90 if dh > dw else 0
