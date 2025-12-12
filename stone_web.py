@@ -22,7 +22,7 @@ class SimpleBin:
         orientations = [(width, height)]
         if can_rotate: orientations.append((height, width))
 
-        # TOLERANCE: Allow tiny float errors (0.01")
+        # TOLERANCE: Allow tiny float errors
         tolerance = 0.01
 
         for i, free in enumerate(self.free_rects):
@@ -44,6 +44,7 @@ class SimpleBin:
             rem_w = max(0, fw - final_w)
             rem_h = max(0, fh - final_h)
             
+            # Row Priority: Force horizontal split for short items
             force_horizontal = (final_h < 12) 
             split_horizontal = True if force_horizontal else ((fw * rem_h) >= (rem_w * fh))
 
@@ -176,11 +177,12 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
             kerf_y = ry + slab_trim
             html += f"""<rect class="kerf" x="{kerf_x}" y="{kerf_y}" width="{rw}" height="{rh}" />"""
             
-            # --- FIX: FORCED MINIMUM FONT SIZE ---
-            # Even for tiny pieces, font will never go below 2.0 (Readable size on print)
-            font_size = max(2.0, min(draw_w, draw_h) * 0.4)
+            # --- BALANCED FONT SIZING ---
+            # Calculate dynamic size based on piece's smallest dimension
+            raw_size = min(draw_w, draw_h) * 0.6
+            # Clamp size: At least 3.0 (readable on small strips), max 8.0 (not huge on islands)
+            font_size = max(3.0, min(raw_size, 8.0))
             
-            # Check for vertical fit
             transform = ""
             if draw_h > draw_w and draw_w < 15: 
                  transform = f'transform="rotate(90, {draw_x + draw_w/2}, {draw_y + draw_h/2})"'
