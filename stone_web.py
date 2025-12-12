@@ -88,7 +88,7 @@ class StonePacker:
         return True, "Success"
 
 # ==========================================
-#   HTML TICKET GENERATOR (Now with Clipping!)
+#   HTML TICKET GENERATOR
 # ==========================================
 def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, kerf, slabs_used, total_cost, waste_pct):
     safe_w = slab_l - (2 * slab_trim)
@@ -128,7 +128,7 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
             rect.piece {{ fill: #d1e7dd; stroke: #28a745; stroke-width: 1; }}
             rect.kerf {{ fill: none; stroke: #cccccc; stroke-width: 0.5; stroke-dasharray: 2,2; }}
             rect.safe {{ fill: none; stroke: red; stroke-width: 0.5; stroke-dasharray: 5,5; }}
-            /* Ensure text is always readable */
+            /* Standard text alignment */
             text {{ font-family: Arial; font-weight: bold; fill: #000; text-anchor: middle; dominant-baseline: middle; }}
             .stats-container {{ display: flex; gap: 20px; }}
             .stats-box {{ flex: 1; border: 1px solid #ddd; padding: 10px; }}
@@ -148,11 +148,22 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
             <strong>Waste Factor:</strong> {waste_pct:.1f}%
         </div>
 
-        <h3>Room Breakdown</h3>
-        <table><tr><th>Room</th><th>Total Sq Ft</th></tr>{room_rows}</table>
-        
-        <h3>Cut List</h3>
-        <table><tr><th>Piece ID</th><th>Dimensions</th><th>Sq Ft</th></tr>{cut_list_rows}</table>
+        <div class="stats-container">
+            <div class="stats-box">
+                <h3>Room Breakdown</h3>
+                <table>
+                    <tr><th>Room</th><th>Total Sq Ft</th></tr>
+                    {room_rows}
+                </table>
+            </div>
+            <div class="stats-box">
+                <h3>Cut List</h3>
+                <table>
+                    <tr><th>Piece ID</th><th>Dimensions</th><th>Sq Ft</th></tr>
+                    {cut_list_rows}
+                </table>
+            </div>
+        </div>
 
         <h3>Slab Layouts</h3>
     """
@@ -164,22 +175,8 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
             <svg viewBox="0 0 {slab_l} {slab_w}" width="100%">
                 <rect x="0" y="0" width="{slab_l}" height="{slab_w}" fill="none" stroke="black" stroke-width="0.2"/>
                 <rect x="{slab_trim}" y="{slab_trim}" width="{safe_w}" height="{safe_h}" class="safe"/>
-                <defs>
         """
-        
-        # --- DEFINE CLIPPING PATHS ---
-        # We must define the clip paths BEFORE drawing the rectangles
-        for j, rect in enumerate(b.rects):
-            draw_x = rect[0] + slab_trim + kerf
-            draw_y = rect[1] + slab_trim + kerf
-            draw_w = rect[2] - (2*kerf)
-            draw_h = rect[3] - (2*kerf)
-            html += f"""<clipPath id="clip_{i}_{j}"><rect x="{draw_x}" y="{draw_y}" width="{draw_w}" height="{draw_h}" /></clipPath>"""
-        
-        html += "</defs>"
-
-        # --- DRAW PIECES ---
-        for j, (rx, ry, rw, rh, rid) in enumerate(b.rects):
+        for (rx, ry, rw, rh, rid) in b.rects:
             draw_x = rx + slab_trim + kerf
             draw_y = ry + slab_trim + kerf
             draw_w = rw - (2*kerf)
@@ -189,19 +186,19 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
             kerf_y = ry + slab_trim
             html += f"""<rect class="kerf" x="{kerf_x}" y="{kerf_y}" width="{rw}" height="{rh}" />"""
             
-            # Use Fixed Readable Size (Relative to slab size so it's consistent)
-            # 1.8% of slab length creates a nice ~12-14pt feel on paper
-            font_size = slab_l * 0.018 
+            # --- TINY TEXT LOGIC (REVERTED) ---
+            # Font size is exactly 40% of the smallest dimension.
+            # NO MINIMUM LIMIT. If the piece is tiny, the text will be tiny.
+            # This guarantees it fits inside the box.
+            font_size = min(draw_w, draw_h) * 0.4
             
             transform = ""
             if draw_h > draw_w and draw_w < 15: 
                  transform = f'transform="rotate(90, {draw_x + draw_w/2}, {draw_y + draw_h/2})"'
 
-            # IMPORTANT: We add clip-path="..." to the TEXT element
-            # This forces the text to hide if it crosses the rectangle border
             html += f"""
                 <rect class="piece" x="{draw_x}" y="{draw_y}" width="{draw_w}" height="{draw_h}" />
-                <text x="{draw_x + draw_w/2}" y="{draw_y + draw_h/2}" font-size="{font_size}" clip-path="url(#clip_{i}_{j})" {transform}>{rid} ({draw_w:.0f}x{draw_h:.0f})</text>
+                <text x="{draw_x + draw_w/2}" y="{draw_y + draw_h/2}" font-size="{font_size}" {transform}>{rid} ({draw_w:.0f}x{draw_h:.0f})</text>
             """
         html += "</svg></div>"
     html += "</body></html>"
@@ -399,10 +396,9 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
                         lbl = f"{rid}\n{dw:.1f}x{dh:.1f}"
                         rot_deg = 90 if dh > dw else 0
                         
-                        # --- CLIPPED TEXT LOGIC ---
-                        t = ax.text(cx, cy, lbl, ha='center', va='center', fontsize=8, rotation=rot_deg, color='black')
-                        clip_rect = patches.Rectangle((dx, dy), dw, dh, transform=ax.transData)
-                        t.set_clip_path(clip_rect)
+                        # TINY TEXT ON SCREEN TOO
+                        font_size = min(dw, dh) * 0.4
+                        ax.text(cx, cy, lbl, ha='center', va='center', fontsize=font_size, rotation=rot_deg, color='black')
                         
                     ax.set_xlim(0, slab_l); ax.set_ylim(0, slab_w); ax.set_aspect('equal'); plt.axis('off')
                     st.pyplot(fig)
