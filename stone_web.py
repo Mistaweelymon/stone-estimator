@@ -88,7 +88,7 @@ class StonePacker:
         return True, "Success"
 
 # ==========================================
-#   HTML TICKET GENERATOR
+#   HTML TICKET GENERATOR (Width-Aware Scaling)
 # ==========================================
 def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, kerf, slabs_used, total_cost, waste_pct):
     safe_w = slab_l - (2 * slab_trim)
@@ -129,7 +129,7 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
             rect.kerf {{ fill: none; stroke: #cccccc; stroke-width: 0.5; stroke-dasharray: 2,2; }}
             rect.safe {{ fill: none; stroke: red; stroke-width: 0.5; stroke-dasharray: 5,5; }}
             /* Ensure text is standard and readable */
-            text {{ font-family: Arial; fill: #000; text-anchor: middle; dominant-baseline: middle; }}
+            text {{ font-family: Arial; font-weight: bold; fill: #000; text-anchor: middle; dominant-baseline: middle; }}
             .stats-container {{ display: flex; gap: 20px; }}
             .stats-box {{ flex: 1; border: 1px solid #ddd; padding: 10px; }}
             @media print {{ .no-print {{ display: none; }} }}
@@ -186,19 +186,43 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
             kerf_y = ry + slab_trim
             html += f"""<rect class="kerf" x="{kerf_x}" y="{kerf_y}" width="{rw}" height="{rh}" />"""
             
-            # --- TINY TEXT FIX ---
-            # 1. Base size is calculated from the piece size to fit inside (50% of smallest dim)
-            # 2. But we HARD CAP it at 1.2 inches max.
-            # Result: Large pieces get tiny 1.2" labels. Small pieces get even smaller labels to fit.
-            font_size = min(1.2, min(draw_w, draw_h) * 0.5)
+            # --- PERFECT FIT FONT LOGIC (V37) ---
+            
+            # 1. Determine Orientation
+            is_vertical = False
+            if draw_h > draw_w and draw_w < 15:
+                is_vertical = True
+            
+            # 2. Get available dimensions for text
+            avail_w = draw_h if is_vertical else draw_w
+            avail_h = draw_w if is_vertical else draw_h
+            
+            # 3. Create the text string
+            label_txt = f"{rid} ({draw_w:.0f}x{draw_h:.0f})"
+            char_count = len(label_txt)
+            if char_count == 0: char_count = 1
+            
+            # 4. Calculate Font Size
+            # We assume a character width is approx 0.6 of its height.
+            # Max width constraint: (font_size * 0.6 * char_count) must be < avail_w
+            # Max height constraint: font_size must be < avail_h * 0.8
+            
+            size_by_width = avail_w / (char_count * 0.6)
+            size_by_height = avail_h * 0.5 # use 50% height for safety
+            
+            # Pick the limiter
+            font_size = min(size_by_width, size_by_height)
+            
+            # Cap the max size so giant pieces don't have billboard text
+            font_size = min(font_size, 2.5) 
             
             transform = ""
-            if draw_h > draw_w and draw_w < 15: 
+            if is_vertical: 
                  transform = f'transform="rotate(90, {draw_x + draw_w/2}, {draw_y + draw_h/2})"'
 
             html += f"""
                 <rect class="piece" x="{draw_x}" y="{draw_y}" width="{draw_w}" height="{draw_h}" />
-                <text x="{draw_x + draw_w/2}" y="{draw_y + draw_h/2}" font-size="{font_size}" {transform}>{rid} ({draw_w:.0f}x{draw_h:.0f})</text>
+                <text x="{draw_x + draw_w/2}" y="{draw_y + draw_h/2}" font-size="{font_size}" {transform}>{label_txt}</text>
             """
         html += "</svg></div>"
     html += "</body></html>"
@@ -397,8 +421,17 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
                         rot_deg = 90 if dh > dw else 0
                         
                         # TINY TEXT ON SCREEN
-                        font_size = min(dw, dh) * 0.4
-                        ax.text(cx, cy, lbl, ha='center', va='center', fontsize=font_size, rotation=rot_deg, color='black')
+                        # Also apply the new logic here for consistency
+                        avail_w = dh if rot_deg else dw
+                        avail_h = dw if rot_deg else dh
+                        char_count = len(lbl) if len(lbl) > 0 else 1
+                        
+                        # Matplotlib uses 'points' for fonts, which is different than SVG units.
+                        # Simple heuristic: Scale by box height
+                        screen_font = min(avail_h * 2.0, avail_w * 2.5 / char_count)
+                        screen_font = max(4, min(screen_font, 12))
+
+                        ax.text(cx, cy, lbl, ha='center', va='center', fontsize=screen_font, rotation=rot_deg, color='black')
                         
                     ax.set_xlim(0, slab_l); ax.set_ylim(0, slab_w); ax.set_aspect('equal'); plt.axis('off')
                     st.pyplot(fig)
