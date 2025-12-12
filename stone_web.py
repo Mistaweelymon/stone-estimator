@@ -118,6 +118,7 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
             rect.piece {{ fill: #d1e7dd; stroke: #28a745; stroke-width: 1; }}
             rect.kerf {{ fill: none; stroke: #cccccc; stroke-width: 0.5; stroke-dasharray: 2,2; }}
             rect.safe {{ fill: none; stroke: red; stroke-width: 0.5; stroke-dasharray: 5,5; }}
+            /* Ensure text is always readable */
             text {{ font-family: Arial; font-weight: bold; fill: #000; text-anchor: middle; dominant-baseline: middle; }}
             .stats-container {{ display: flex; gap: 20px; }}
             .stats-box {{ flex: 1; border: 1px solid #ddd; padding: 10px; }}
@@ -175,13 +176,13 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
             kerf_y = ry + slab_trim
             html += f"""<rect class="kerf" x="{kerf_x}" y="{kerf_y}" width="{rw}" height="{rh}" />"""
             
-            # --- IMPROVED FONT SIZING ---
-            # Force a minimum legible size (2.5) but scale up for huge pieces
-            font_size = max(2.5, min(draw_w, draw_h) * 0.4)
+            # --- FIX: FORCED MINIMUM FONT SIZE ---
+            # Even for tiny pieces, font will never go below 2.0 (Readable size on print)
+            font_size = max(2.0, min(draw_w, draw_h) * 0.4)
             
             # Check for vertical fit
             transform = ""
-            if draw_h > draw_w and draw_w < 15: # If tall/skinny
+            if draw_h > draw_w and draw_w < 15: 
                  transform = f'transform="rotate(90, {draw_x + draw_w/2}, {draw_y + draw_h/2})"'
 
             html += f"""
