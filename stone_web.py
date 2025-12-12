@@ -177,11 +177,13 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
             kerf_y = ry + slab_trim
             html += f"""<rect class="kerf" x="{kerf_x}" y="{kerf_y}" width="{rw}" height="{rh}" />"""
             
-            # --- BALANCED FONT SIZING ---
-            # Calculate dynamic size based on piece's smallest dimension
-            raw_size = min(draw_w, draw_h) * 0.6
-            # Clamp size: At least 3.0 (readable on small strips), max 8.0 (not huge on islands)
-            font_size = max(3.0, min(raw_size, 8.0))
+            # --- PROPORTIONAL FONT SIZING (v29 Fix) ---
+            # Use a smaller percentage of the smallest dimension (30%)
+            # Set a smaller absolute minimum (1.5) to prevent overlap on tight stacks
+            # Cap at a reasonable maximum (6.0)
+            shortest_side = min(draw_w, draw_h)
+            calculated_size = shortest_side * 0.3
+            font_size = max(1.5, min(calculated_size, 6.0))
             
             transform = ""
             if draw_h > draw_w and draw_w < 15: 
