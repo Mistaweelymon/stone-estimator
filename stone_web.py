@@ -22,13 +22,17 @@ class SimpleBin:
         orientations = [(width, height)]
         if can_rotate: orientations.append((height, width))
 
+        # TOLERANCE: Allow tiny float errors (0.01")
+        tolerance = 0.01
+
         for i, free in enumerate(self.free_rects):
             fx, fy, fw, fh = free
             for (test_w, test_h) in orientations:
-                # Add tolerance for float errors
-                if test_w <= fw + 0.001 and test_h <= fh + 0.001:
-                    leftover_w, leftover_h = fw - test_w, fh - test_h
-                    short_side = min(leftover_w, leftover_h)
+                if test_w <= fw + tolerance and test_h <= fh + tolerance:
+                    leftover_w = fw - test_w
+                    leftover_h = fh - test_h
+                    short_side = min(abs(leftover_w), abs(leftover_h))
+                    
                     if short_side < best_score:
                         best_score, best_rect_idx, best_orientation = short_side, i, (test_w, test_h)
 
@@ -37,9 +41,10 @@ class SimpleBin:
             final_w, final_h = best_orientation
             self.rects.append((fx, fy, final_w, final_h, rid))
             
-            rem_w, rem_h = fw - final_w, fh - final_h
+            rem_w = max(0, fw - final_w)
+            rem_h = max(0, fh - final_h)
             
-            force_horizontal = (final_h < 10) 
+            force_horizontal = (final_h < 12) 
             split_horizontal = True if force_horizontal else ((fw * rem_h) >= (rem_w * fh))
 
             if split_horizontal:
@@ -57,7 +62,6 @@ class StonePacker:
         self.bins = []
 
     def pack(self, pieces):
-        # Sort by Area Descending
         pieces.sort(key=lambda x: x[0] * x[1], reverse=True)
         for p in pieces:
             pl, pw, pid, rot = p
@@ -69,7 +73,7 @@ class StonePacker:
             if not placed:
                 new_bin = SimpleBin(self.slab_l, self.slab_w)
                 if not new_bin.add_rect(pl, pw, pid, rot):
-                    return False, f"Piece '{pid}' ({pl:.2f}x{pw:.2f}) fits nowhere (Slab: {self.slab_l}x{self.slab_w})."
+                    return False, f"Piece '{pid}' fits nowhere."
                 self.bins.append(new_bin)
         return True, "Success"
 
@@ -90,11 +94,9 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
             final_w = rh - (2*kerf)
             piece_sf = (final_l * final_w) / 144.0
             total_stone_sf += piece_sf
-            
             room_name = rid.split(":")[0] if ":" in rid else "Unassigned"
             room_sf[room_name] += piece_sf
-            
-            cut_list_rows += f"<tr><td>{rid}</td><td>{final_l:.1f} x {final_w:.1f}</td><td>{piece_sf:.2f} sq ft</td></tr>"
+            cut_list_rows += f"<tr><td>{rid}</td><td>{final_l:.2f} x {final_w:.2f}</td><td>{piece_sf:.2f} sq ft</td></tr>"
 
     room_rows = ""
     for r, area in room_sf.items():
@@ -114,8 +116,9 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
             th {{ background-color: #f2f2f2; }}
             svg {{ background: #fafafa; border: 1px solid #000; }}
             rect.piece {{ fill: #d1e7dd; stroke: #28a745; stroke-width: 1; }}
+            rect.kerf {{ fill: none; stroke: #cccccc; stroke-width: 0.5; stroke-dasharray: 2,2; }}
             rect.safe {{ fill: none; stroke: red; stroke-width: 0.5; stroke-dasharray: 5,5; }}
-            text {{ font-family: Arial; font-size: 0.4px; text-anchor: middle; dominant-baseline: middle; }}
+            text {{ font-family: Arial; font-weight: bold; fill: #000; text-anchor: middle; dominant-baseline: middle; }}
             .stats-container {{ display: flex; gap: 20px; }}
             .stats-box {{ flex: 1; border: 1px solid #ddd; padding: 10px; }}
             @media print {{ .no-print {{ display: none; }} }}
@@ -167,12 +170,23 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
             draw_y = ry + slab_trim + kerf
             draw_w = rw - (2*kerf)
             draw_h = rh - (2*kerf)
-            font_size = min(draw_w, draw_h) * 0.25
-            if font_size > 3: font_size = 3
             
+            kerf_x = rx + slab_trim
+            kerf_y = ry + slab_trim
+            html += f"""<rect class="kerf" x="{kerf_x}" y="{kerf_y}" width="{rw}" height="{rh}" />"""
+            
+            # --- IMPROVED FONT SIZING ---
+            # Force a minimum legible size (2.5) but scale up for huge pieces
+            font_size = max(2.5, min(draw_w, draw_h) * 0.4)
+            
+            # Check for vertical fit
+            transform = ""
+            if draw_h > draw_w and draw_w < 15: # If tall/skinny
+                 transform = f'transform="rotate(90, {draw_x + draw_w/2}, {draw_y + draw_h/2})"'
+
             html += f"""
                 <rect class="piece" x="{draw_x}" y="{draw_y}" width="{draw_w}" height="{draw_h}" />
-                <text x="{draw_x + draw_w/2}" y="{draw_y + draw_h/2}" font-size="{font_size}">{rid} ({draw_w:.0f}x{draw_h:.0f})</text>
+                <text x="{draw_x + draw_w/2}" y="{draw_y + draw_h/2}" font-size="{font_size}" {transform}>{rid} ({draw_w:.0f}x{draw_h:.0f})</text>
             """
         html += "</svg></div>"
     html += "</body></html>"
@@ -239,11 +253,8 @@ if st.session_state['editing_idx'] is not None:
         nq = c5.number_input("Qty", value=p['qty'])
         nrot = c6.checkbox("Rotate?", value=p['rot'])
         nsplit = c7.checkbox("Center Seam?", value=p.get('split', False))
-        
         if st.form_submit_button("Update"):
-            st.session_state['pieces'][idx] = {
-                "room": nr, "name": nn, "l": nl, "w": nw, "qty": nq, "rot": nrot, "split": nsplit
-            }
+            st.session_state['pieces'][idx] = {"room": nr, "name": nn, "l": nl, "w": nw, "qty": nq, "rot": nrot, "split": nsplit}
             st.session_state['editing_idx'] = None
             st.rerun()
 
@@ -256,13 +267,10 @@ l = c3.number_input("Length", 0.0, key="al")
 w = c4.number_input("Width", 0.0, key="aw")
 qty = c5.number_input("Qty", 1, key="aq")
 rot = c6.checkbox("Rotate?", key="arot")
-split = c7.checkbox("Center Seam?", key="asplit", help="Split equally (50/50) if too long for slab")
-
+split = c7.checkbox("Center Seam?", key="asplit")
 if c8.button("➕ Add"):
     if l > 0 and w > 0:
-        st.session_state['pieces'].append({
-            "room": room, "name": name, "l": l, "w": w, "qty": qty, "rot": rot, "split": split
-        })
+        st.session_state['pieces'].append({"room": room, "name": name, "l": l, "w": w, "qty": qty, "rot": rot, "split": split})
         st.rerun()
 
 # --- LIST ---
@@ -274,7 +282,6 @@ if st.session_state['pieces']:
         if p['rot']: flags.append("Rotatable")
         if p.get('split'): flags.append("Center Seam")
         flag_str = f" ({', '.join(flags)})" if flags else ""
-        
         c1.write(f"**{p['qty']}x** {p['room']} - {p['name']} ({p['l']} x {p['w']}){flag_str}")
         if c2.button("Edit", key=f"e{i}"): st.session_state['editing_idx'] = i; st.rerun()
         if c3.button("❌", key=f"d{i}"): st.session_state['pieces'].pop(i); st.rerun()
@@ -295,31 +302,20 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
 
         for p in st.session_state['pieces']:
             p_tot_w = p['w'] + (2 * kerf)
-            # Standard Width check
             if not p['rot'] and p_tot_w > usable_w:
-                error = f"Piece '{p['name']}' ({p['w']:.2f}\") is too wide for usable slab ({usable_w:.2f}\"). Rotation OFF."
+                error = f"Piece '{p['name']}' too wide."
                 break
-            # Rotated check (if rot allowed, piece length becomes width)
-            if p['rot'] and min(p['l'], p['w']) + (2*kerf) > usable_w:
-                 error = f"Piece '{p['name']}' is too large to fit on the slab in any orientation."
-                 break
-
             for _ in range(p['qty']):
                 max_cut = usable_l - (2*kerf)
-                
                 parts = []
-                # 1. Does it fit? No cut needed.
                 if p['l'] <= max_cut:
                     parts.append(p['l'])
                 else:
-                    # Seaming needed
                     if p.get('split', False):
-                        # Center Seam (Equal Parts)
                         num_parts = math.ceil(p['l'] / max_cut)
                         equal_len = p['l'] / num_parts
                         parts = [equal_len] * num_parts
                     else:
-                        # Standard Seam (Max First)
                         rem = p['l']
                         while rem > 0:
                             cut = min(rem, max_cut)
@@ -327,7 +323,6 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
                             if 0 < fut < 25.0: cut -= (25.0 - fut)
                             parts.append(cut)
                             rem -= cut
-                
                 for idx, plen in enumerate(parts):
                     pid = f"{p['room']}: {p['name']}" + (f" ({idx+1}/{len(parts)})" if len(parts)>1 else "")
                     packing_list.append((plen + (2*kerf), p['w'] + (2*kerf), pid, p['rot']))
@@ -378,6 +373,11 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
                     for (rx, ry, rw, rh, rid) in b.rects:
                         dx, dy = rx + slab_trim + kerf, ry + slab_trim + kerf
                         dw, dh = rw - (2*kerf), rh - (2*kerf)
+                        
+                        kx = rx + slab_trim
+                        ky = ry + slab_trim
+                        ax.add_patch(patches.Rectangle((kx, ky), rw, rh, linewidth=0.5, linestyle=':', edgecolor='gray', facecolor='none'))
+
                         ax.add_patch(patches.Rectangle((dx, dy), dw, dh, facecolor='#d1e7dd', edgecolor='green'))
                         
                         cx, cy = dx + dw/2, dy + dh/2
