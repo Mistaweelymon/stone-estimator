@@ -7,13 +7,21 @@ import pandas as pd
 import math
 
 # ==========================================
-#   CUSTOM PACKING ENGINE (Guillotine + Row Priority)
+#   CUSTOM PACKING ENGINE (Guillotine + Collision Check)
 # ==========================================
 class SimpleBin:
     def __init__(self, width, height):
         self.w, self.h = width, height
-        self.rects = []
+        self.placed_rects = []  # Stores (x, y, w, h, id)
         self.free_rects = [(0, 0, width, height)]
+
+    def has_collision(self, x, y, w, h):
+        # "Paranoid" check: Does this new box hit any existing box?
+        for (rx, ry, rw, rh, _) in self.placed_rects:
+            # Check for intersection
+            if (x < rx + rw) and (x + w > rx) and (y < ry + rh) and (y + h > ry):
+                return True
+        return False
 
     def add_rect(self, width, height, rid, can_rotate):
         best_rect_idx = -1
@@ -22,13 +30,11 @@ class SimpleBin:
         orientations = [(width, height)]
         if can_rotate: orientations.append((height, width))
 
-        # TOLERANCE: Allow tiny float errors
-        tolerance = 0.01
-
+        # 1. Find Best Fit
         for i, free in enumerate(self.free_rects):
             fx, fy, fw, fh = free
             for (test_w, test_h) in orientations:
-                if test_w <= fw + tolerance and test_h <= fh + tolerance:
+                if test_w <= fw + 0.01 and test_h <= fh + 0.01:
                     leftover_w = fw - test_w
                     leftover_h = fh - test_h
                     short_side = min(abs(leftover_w), abs(leftover_h))
@@ -36,15 +42,21 @@ class SimpleBin:
                     if short_side < best_score:
                         best_score, best_rect_idx, best_orientation = short_side, i, (test_w, test_h)
 
+        # 2. Place & Split
         if best_rect_idx != -1:
             fx, fy, fw, fh = self.free_rects.pop(best_rect_idx)
             final_w, final_h = best_orientation
-            self.rects.append((fx, fy, final_w, final_h, rid))
+            
+            # Final Safety: If math float errors cause a collision, reject this spot
+            if self.has_collision(fx, fy, final_w, final_h):
+                return False
+
+            self.placed_rects.append((fx, fy, final_w, final_h, rid))
             
             rem_w = max(0, fw - final_w)
             rem_h = max(0, fh - final_h)
             
-            # Row Priority: Force horizontal split for short items
+            # Row Priority Split
             force_horizontal = (final_h < 12) 
             split_horizontal = True if force_horizontal else ((fw * rem_h) >= (rem_w * fh))
 
@@ -63,6 +75,7 @@ class StonePacker:
         self.bins = []
 
     def pack(self, pieces):
+        # Sort by Area
         pieces.sort(key=lambda x: x[0] * x[1], reverse=True)
         for p in pieces:
             pl, pw, pid, rot = p
@@ -90,7 +103,7 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
     
     cut_list_rows = ""
     for b in packer.bins:
-        for (rx, ry, rw, rh, rid) in b.rects:
+        for (rx, ry, rw, rh, rid) in b.placed_rects:
             final_l = rw - (2*kerf)
             final_w = rh - (2*kerf)
             piece_sf = (final_l * final_w) / 144.0
@@ -119,10 +132,7 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
             rect.piece {{ fill: #d1e7dd; stroke: #28a745; stroke-width: 1; }}
             rect.kerf {{ fill: none; stroke: #cccccc; stroke-width: 0.5; stroke-dasharray: 2,2; }}
             rect.safe {{ fill: none; stroke: red; stroke-width: 0.5; stroke-dasharray: 5,5; }}
-            /* Ensure text is always readable */
             text {{ font-family: Arial; font-weight: bold; fill: #000; text-anchor: middle; dominant-baseline: middle; }}
-            .stats-container {{ display: flex; gap: 20px; }}
-            .stats-box {{ flex: 1; border: 1px solid #ddd; padding: 10px; }}
             @media print {{ .no-print {{ display: none; }} }}
         </style>
     </head>
@@ -139,22 +149,11 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
             <strong>Waste Factor:</strong> {waste_pct:.1f}%
         </div>
 
-        <div class="stats-container">
-            <div class="stats-box">
-                <h3>Room Breakdown</h3>
-                <table>
-                    <tr><th>Room</th><th>Total Sq Ft</th></tr>
-                    {room_rows}
-                </table>
-            </div>
-            <div class="stats-box">
-                <h3>Cut List</h3>
-                <table>
-                    <tr><th>Piece ID</th><th>Dimensions</th><th>Sq Ft</th></tr>
-                    {cut_list_rows}
-                </table>
-            </div>
-        </div>
+        <h3>Room Breakdown</h3>
+        <table><tr><th>Room</th><th>Total Sq Ft</th></tr>{room_rows}</table>
+        
+        <h3>Cut List</h3>
+        <table><tr><th>Piece ID</th><th>Dimensions</th><th>Sq Ft</th></tr>{cut_list_rows}</table>
 
         <h3>Slab Layouts</h3>
     """
@@ -167,7 +166,7 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
                 <rect x="0" y="0" width="{slab_l}" height="{slab_w}" fill="none" stroke="black" stroke-width="0.2"/>
                 <rect x="{slab_trim}" y="{slab_trim}" width="{safe_w}" height="{safe_h}" class="safe"/>
         """
-        for (rx, ry, rw, rh, rid) in b.rects:
+        for (rx, ry, rw, rh, rid) in b.placed_rects:
             draw_x = rx + slab_trim + kerf
             draw_y = ry + slab_trim + kerf
             draw_w = rw - (2*kerf)
@@ -177,13 +176,16 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
             kerf_y = ry + slab_trim
             html += f"""<rect class="kerf" x="{kerf_x}" y="{kerf_y}" width="{rw}" height="{rh}" />"""
             
-            # --- PROPORTIONAL FONT SIZING (v29 Fix) ---
-            # Use a smaller percentage of the smallest dimension (30%)
-            # Set a smaller absolute minimum (1.5) to prevent overlap on tight stacks
-            # Cap at a reasonable maximum (6.0)
-            shortest_side = min(draw_w, draw_h)
-            calculated_size = shortest_side * 0.3
-            font_size = max(1.5, min(calculated_size, 6.0))
+            # --- CLEANER TEXT LOGIC ---
+            # If piece is small strip (<10"), show only Dims, hide Name
+            is_strip = min(draw_w, draw_h) < 10
+            
+            label_txt = f"{draw_w:.0f}x{draw_h:.0f}"
+            if not is_strip:
+                label_txt = f"{rid} ({label_txt})"
+            
+            font_size = max(3.0, min(draw_w, draw_h) * 0.5)
+            if font_size > 8.0: font_size = 8.0
             
             transform = ""
             if draw_h > draw_w and draw_w < 15: 
@@ -191,7 +193,7 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
 
             html += f"""
                 <rect class="piece" x="{draw_x}" y="{draw_y}" width="{draw_w}" height="{draw_h}" />
-                <text x="{draw_x + draw_w/2}" y="{draw_y + draw_h/2}" font-size="{font_size}" {transform}>{rid} ({draw_w:.0f}x{draw_h:.0f})</text>
+                <text x="{draw_x + draw_w/2}" y="{draw_y + draw_h/2}" font-size="{font_size}" {transform}>{label_txt}</text>
             """
         html += "</svg></div>"
     html += "</body></html>"
@@ -346,7 +348,7 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
                 room_sf = collections.defaultdict(float)
                 final_stone_sf = 0.0
                 for b in packer.bins:
-                    for (rx, ry, rw, rh, rid) in b.rects:
+                    for (rx, ry, rw, rh, rid) in b.placed_rects:
                         f_l = rw - (2*kerf)
                         f_w = rh - (2*kerf)
                         sf = (f_l * f_w) / 144.0
@@ -375,22 +377,32 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
                     ax.add_patch(patches.Rectangle((0, 0), slab_l, slab_w, facecolor='#eee', edgecolor='black'))
                     ax.add_patch(patches.Rectangle((slab_trim, slab_trim), usable_l, usable_w, linewidth=1.5, linestyle='--', edgecolor='red', facecolor='none'))
                     
-                    for (rx, ry, rw, rh, rid) in b.rects:
+                    for (rx, ry, rw, rh, rid) in b.placed_rects:
                         dx, dy = rx + slab_trim + kerf, ry + slab_trim + kerf
                         dw, dh = rw - (2*kerf), rh - (2*kerf)
                         
                         kx = rx + slab_trim
                         ky = ry + slab_trim
-                        ax.add_patch(patches.Rectangle((kx, ky), rw, rh, linewidth=0.5, linestyle=':', edgecolor='gray', facecolor='none'))
-
-                        ax.add_patch(patches.Rectangle((dx, dy), dw, dh, facecolor='#d1e7dd', edgecolor='green'))
                         
-                        cx, cy = dx + dw/2, dy + dh/2
+                        # --- CLIPPED TEXT LOGIC ---
+                        # Create the green rectangle (the stone)
+                        stone_rect = patches.Rectangle((dx, dy), dw, dh, facecolor='#d1e7dd', edgecolor='green')
+                        ax.add_patch(stone_rect)
+                        
+                        # Abbreviate Text if skinny
+                        is_strip = min(dw, dh) < 10
                         lbl = f"{rid}\n{dw:.1f}x{dh:.1f}"
+                        if is_strip: 
+                            lbl = f"{dw:.1f}x{dh:.1f}"
+                        
+                        # Calculate rotation
                         rot_deg = 90 if dh > dw else 0
-                        font_size = 8
-                        if min(dw, dh) < 10: font_size = 6
-                        ax.text(cx, cy, lbl, ha='center', va='center', fontsize=font_size, rotation=rot_deg, color='black')
+                        
+                        # Add text with CLIP_ON=True
+                        # This forces text to vanish if it crosses the green line
+                        cx, cy = dx + dw/2, dy + dh/2
+                        t = ax.text(cx, cy, lbl, ha='center', va='center', fontsize=8, rotation=rot_deg, color='black')
+                        t.set_clip_path(stone_rect) # MAGIC LINE: Cuts off bleeding text
                         
                     ax.set_xlim(0, slab_l); ax.set_ylim(0, slab_w); ax.set_aspect('equal'); plt.axis('off')
                     st.pyplot(fig)
