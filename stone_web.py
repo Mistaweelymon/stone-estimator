@@ -172,14 +172,13 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
             kerf_y = ry + slab_trim
             html += f"""<rect class="kerf" x="{kerf_x}" y="{kerf_y}" width="{rw}" height="{rh}" />"""
             
-            # --- FIXED FONT SIZE ---
-            # Instead of scaling with the piece, we scale with the SLAB.
-            # This guarantees text is roughly 4% of the slab length (readable on paper).
-            # We don't care if it bleeds out of small boxes.
-            font_size = slab_l * 0.035 
+            # --- FIX: FIXED FONT SIZE ---
+            # 1.5 is standard readable size. 1.0 for small strips.
+            font_size = 1.5
+            if min(draw_w, draw_h) < 5.0:
+                font_size = 1.0
             
             transform = ""
-            # If the piece is very narrow vertical strip, rotate text
             if draw_h > draw_w and draw_w < 15: 
                  transform = f'transform="rotate(90, {draw_x + draw_w/2}, {draw_y + draw_h/2})"'
 
@@ -340,7 +339,7 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
                 room_sf = collections.defaultdict(float)
                 final_stone_sf = 0.0
                 for b in packer.bins:
-                    for (rx, ry, rw, rh, rid) in b.rects:
+                    for (rx, ry, rw, rh, rid) in b.placed_rects:
                         f_l = rw - (2*kerf)
                         f_w = rh - (2*kerf)
                         sf = (f_l * f_w) / 144.0
@@ -369,7 +368,7 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
                     ax.add_patch(patches.Rectangle((0, 0), slab_l, slab_w, facecolor='#eee', edgecolor='black'))
                     ax.add_patch(patches.Rectangle((slab_trim, slab_trim), usable_l, usable_w, linewidth=1.5, linestyle='--', edgecolor='red', facecolor='none'))
                     
-                    for (rx, ry, rw, rh, rid) in b.rects:
+                    for (rx, ry, rw, rh, rid) in b.placed_rects:
                         dx, dy = rx + slab_trim + kerf, ry + slab_trim + kerf
                         dw, dh = rw - (2*kerf), rh - (2*kerf)
                         
@@ -383,10 +382,8 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
                         lbl = f"{rid}\n{dw:.1f}x{dh:.1f}"
                         rot_deg = 90 if dh > dw else 0
                         
-                        # --- CLIPPED TEXT LOGIC ---
+                        # --- CLIPPED TEXT LOGIC (On Screen) ---
                         t = ax.text(cx, cy, lbl, ha='center', va='center', fontsize=8, rotation=rot_deg, color='black')
-                        
-                        # Create clip path (Match the green stone rectangle)
                         clip_rect = patches.Rectangle((dx, dy), dw, dh, transform=ax.transData)
                         t.set_clip_path(clip_rect)
                         
