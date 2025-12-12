@@ -128,7 +128,10 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
             rect.piece {{ fill: #d1e7dd; stroke: #28a745; stroke-width: 1; }}
             rect.kerf {{ fill: none; stroke: #cccccc; stroke-width: 0.5; stroke-dasharray: 2,2; }}
             rect.safe {{ fill: none; stroke: red; stroke-width: 0.5; stroke-dasharray: 5,5; }}
-            text {{ font-family: Arial; font-weight: bold; fill: #000; text-anchor: middle; dominant-baseline: middle; }}
+            /* Ensure text is standard and readable */
+            text {{ font-family: Arial; fill: #000; text-anchor: middle; dominant-baseline: middle; }}
+            .stats-container {{ display: flex; gap: 20px; }}
+            .stats-box {{ flex: 1; border: 1px solid #ddd; padding: 10px; }}
             @media print {{ .no-print {{ display: none; }} }}
         </style>
     </head>
@@ -145,11 +148,22 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
             <strong>Waste Factor:</strong> {waste_pct:.1f}%
         </div>
 
-        <h3>Room Breakdown</h3>
-        <table><tr><th>Room</th><th>Total Sq Ft</th></tr>{room_rows}</table>
-        
-        <h3>Cut List</h3>
-        <table><tr><th>Piece ID</th><th>Dimensions</th><th>Sq Ft</th></tr>{cut_list_rows}</table>
+        <div class="stats-container">
+            <div class="stats-box">
+                <h3>Room Breakdown</h3>
+                <table>
+                    <tr><th>Room</th><th>Total Sq Ft</th></tr>
+                    {room_rows}
+                </table>
+            </div>
+            <div class="stats-box">
+                <h3>Cut List</h3>
+                <table>
+                    <tr><th>Piece ID</th><th>Dimensions</th><th>Sq Ft</th></tr>
+                    {cut_list_rows}
+                </table>
+            </div>
+        </div>
 
         <h3>Slab Layouts</h3>
     """
@@ -172,10 +186,11 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
             kerf_y = ry + slab_trim
             html += f"""<rect class="kerf" x="{kerf_x}" y="{kerf_y}" width="{rw}" height="{rh}" />"""
             
-            # --- FIXED FONT SIZE (v35) ---
-            # Base size: 1.2% of slab length (Small but readable)
-            # Cap: Maximum 3.0 units (Prevents huge text on big pieces)
-            font_size = min(slab_l * 0.012, 3.0)
+            # --- TINY TEXT FIX ---
+            # 1. Base size is calculated from the piece size to fit inside (50% of smallest dim)
+            # 2. But we HARD CAP it at 1.2 inches max.
+            # Result: Large pieces get tiny 1.2" labels. Small pieces get even smaller labels to fit.
+            font_size = min(1.2, min(draw_w, draw_h) * 0.5)
             
             transform = ""
             if draw_h > draw_w and draw_w < 15: 
