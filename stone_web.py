@@ -88,7 +88,7 @@ class StonePacker:
         return True, "Success"
 
 # ==========================================
-#   HTML TICKET GENERATOR
+#   HTML TICKET GENERATOR (Now with Clipping!)
 # ==========================================
 def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, kerf, slabs_used, total_cost, waste_pct):
     safe_w = slab_l - (2 * slab_trim)
@@ -128,7 +128,10 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
             rect.piece {{ fill: #d1e7dd; stroke: #28a745; stroke-width: 1; }}
             rect.kerf {{ fill: none; stroke: #cccccc; stroke-width: 0.5; stroke-dasharray: 2,2; }}
             rect.safe {{ fill: none; stroke: red; stroke-width: 0.5; stroke-dasharray: 5,5; }}
+            /* Ensure text is always readable */
             text {{ font-family: Arial; font-weight: bold; fill: #000; text-anchor: middle; dominant-baseline: middle; }}
+            .stats-container {{ display: flex; gap: 20px; }}
+            .stats-box {{ flex: 1; border: 1px solid #ddd; padding: 10px; }}
             @media print {{ .no-print {{ display: none; }} }}
         </style>
     </head>
@@ -161,8 +164,22 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
             <svg viewBox="0 0 {slab_l} {slab_w}" width="100%">
                 <rect x="0" y="0" width="{slab_l}" height="{slab_w}" fill="none" stroke="black" stroke-width="0.2"/>
                 <rect x="{slab_trim}" y="{slab_trim}" width="{safe_w}" height="{safe_h}" class="safe"/>
+                <defs>
         """
-        for (rx, ry, rw, rh, rid) in b.rects:
+        
+        # --- DEFINE CLIPPING PATHS ---
+        # We must define the clip paths BEFORE drawing the rectangles
+        for j, rect in enumerate(b.rects):
+            draw_x = rect[0] + slab_trim + kerf
+            draw_y = rect[1] + slab_trim + kerf
+            draw_w = rect[2] - (2*kerf)
+            draw_h = rect[3] - (2*kerf)
+            html += f"""<clipPath id="clip_{i}_{j}"><rect x="{draw_x}" y="{draw_y}" width="{draw_w}" height="{draw_h}" /></clipPath>"""
+        
+        html += "</defs>"
+
+        # --- DRAW PIECES ---
+        for j, (rx, ry, rw, rh, rid) in enumerate(b.rects):
             draw_x = rx + slab_trim + kerf
             draw_y = ry + slab_trim + kerf
             draw_w = rw - (2*kerf)
@@ -172,19 +189,19 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
             kerf_y = ry + slab_trim
             html += f"""<rect class="kerf" x="{kerf_x}" y="{kerf_y}" width="{rw}" height="{rh}" />"""
             
-            # --- FIX: FIXED FONT SIZE ---
-            # 1.5 is standard readable size. 1.0 for small strips.
-            font_size = 1.5
-            if min(draw_w, draw_h) < 5.0:
-                font_size = 1.0
+            # Use Fixed Readable Size (Relative to slab size so it's consistent)
+            # 1.8% of slab length creates a nice ~12-14pt feel on paper
+            font_size = slab_l * 0.018 
             
             transform = ""
             if draw_h > draw_w and draw_w < 15: 
                  transform = f'transform="rotate(90, {draw_x + draw_w/2}, {draw_y + draw_h/2})"'
 
+            # IMPORTANT: We add clip-path="..." to the TEXT element
+            # This forces the text to hide if it crosses the rectangle border
             html += f"""
                 <rect class="piece" x="{draw_x}" y="{draw_y}" width="{draw_w}" height="{draw_h}" />
-                <text x="{draw_x + draw_w/2}" y="{draw_y + draw_h/2}" font-size="{font_size}" {transform}>{rid} ({draw_w:.0f}x{draw_h:.0f})</text>
+                <text x="{draw_x + draw_w/2}" y="{draw_y + draw_h/2}" font-size="{font_size}" clip-path="url(#clip_{i}_{j})" {transform}>{rid} ({draw_w:.0f}x{draw_h:.0f})</text>
             """
         html += "</svg></div>"
     html += "</body></html>"
@@ -339,7 +356,7 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
                 room_sf = collections.defaultdict(float)
                 final_stone_sf = 0.0
                 for b in packer.bins:
-                    for (rx, ry, rw, rh, rid) in b.placed_rects:
+                    for (rx, ry, rw, rh, rid) in b.rects:
                         f_l = rw - (2*kerf)
                         f_w = rh - (2*kerf)
                         sf = (f_l * f_w) / 144.0
@@ -368,7 +385,7 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
                     ax.add_patch(patches.Rectangle((0, 0), slab_l, slab_w, facecolor='#eee', edgecolor='black'))
                     ax.add_patch(patches.Rectangle((slab_trim, slab_trim), usable_l, usable_w, linewidth=1.5, linestyle='--', edgecolor='red', facecolor='none'))
                     
-                    for (rx, ry, rw, rh, rid) in b.placed_rects:
+                    for (rx, ry, rw, rh, rid) in b.rects:
                         dx, dy = rx + slab_trim + kerf, ry + slab_trim + kerf
                         dw, dh = rw - (2*kerf), rh - (2*kerf)
                         
@@ -382,7 +399,7 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
                         lbl = f"{rid}\n{dw:.1f}x{dh:.1f}"
                         rot_deg = 90 if dh > dw else 0
                         
-                        # --- CLIPPED TEXT LOGIC (On Screen) ---
+                        # --- CLIPPED TEXT LOGIC ---
                         t = ax.text(cx, cy, lbl, ha='center', va='center', fontsize=8, rotation=rot_deg, color='black')
                         clip_rect = patches.Rectangle((dx, dy), dw, dh, transform=ax.transData)
                         t.set_clip_path(clip_rect)
