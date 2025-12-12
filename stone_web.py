@@ -88,7 +88,7 @@ class StonePacker:
         return True, "Success"
 
 # ==========================================
-#   HTML TICKET GENERATOR
+#   HTML TICKET GENERATOR (Fixed Tiny Font)
 # ==========================================
 def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, kerf, slabs_used, total_cost, waste_pct):
     safe_w = slab_l - (2 * slab_trim)
@@ -128,7 +128,6 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
             rect.piece {{ fill: #d1e7dd; stroke: #28a745; stroke-width: 1; }}
             rect.kerf {{ fill: none; stroke: #cccccc; stroke-width: 0.5; stroke-dasharray: 2,2; }}
             rect.safe {{ fill: none; stroke: red; stroke-width: 0.5; stroke-dasharray: 5,5; }}
-            /* Ensure text is standard and readable */
             text {{ font-family: Arial; font-weight: bold; fill: #000; text-anchor: middle; dominant-baseline: middle; }}
             .stats-container {{ display: flex; gap: 20px; }}
             .stats-box {{ flex: 1; border: 1px solid #ddd; padding: 10px; }}
@@ -186,36 +185,18 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
             kerf_y = ry + slab_trim
             html += f"""<rect class="kerf" x="{kerf_x}" y="{kerf_y}" width="{rw}" height="{rh}" />"""
             
-            # --- FINAL FONT FIX ---
-            # 1. Determine which dimension limits the text (Width or Height?)
-            # 2. Count characters in label
-            # 3. Calculate max font size that fits that many chars in that width
-            # 4. HARD CAP at 2.5 units (prevents huge text)
-            
-            is_vertical = False
-            if draw_h > draw_w and draw_w < 15:
-                is_vertical = True
-                
-            avail_w = draw_h if is_vertical else draw_w
-            
-            label = f"{rid} ({draw_w:.0f}x{draw_h:.0f})"
-            char_len = len(label)
-            if char_len == 0: char_len = 1
-            
-            # Rough math: Font Size ~= Width / (Chars * 0.6)
-            calc_size = avail_w / (char_len * 0.5)
-            
-            # STRICT LIMITS
-            font_size = min(calc_size, 2.5) # Never bigger than 2.5
-            font_size = max(font_size, 0.8) # Never smaller than 0.8 (readable min)
+            # --- THE "TINY TEXT" FIX ---
+            # No math. No scaling. Just hardcoded small size.
+            # 1.0 unit is roughly 0.7% of the slab length. Very small.
+            font_size = 1.0
             
             transform = ""
-            if is_vertical: 
+            if draw_h > draw_w and draw_w < 15: 
                  transform = f'transform="rotate(90, {draw_x + draw_w/2}, {draw_y + draw_h/2})"'
 
             html += f"""
                 <rect class="piece" x="{draw_x}" y="{draw_y}" width="{draw_w}" height="{draw_h}" />
-                <text x="{draw_x + draw_w/2}" y="{draw_y + draw_h/2}" font-size="{font_size}" {transform}>{label}</text>
+                <text x="{draw_x + draw_w/2}" y="{draw_y + draw_h/2}" font-size="{font_size}" {transform}>{rid} ({draw_w:.0f}x{draw_h:.0f})</text>
             """
         html += "</svg></div>"
     html += "</body></html>"
@@ -271,30 +252,38 @@ with st.sidebar:
 # --- EDIT FORM ---
 if st.session_state['editing_idx'] is not None:
     idx = st.session_state['editing_idx']
-    p = st.session_state['pieces'][idx]
-    st.info(f"✏️ Editing: {p['name']}")
-    with st.form("edit"):
-        c1, c2, c3, c4, c5, c6, c7 = st.columns([2, 2, 1, 1, 1, 1, 1])
-        nr = c1.text_input("Room", p['room'])
-        nn = c2.text_input("Name", p['name'])
-        nl = c3.number_input("L", value=p['l'])
-        nw = c4.number_input("W", value=p['w'])
-        nq = c5.number_input("Qty", value=p['qty'])
-        nrot = c6.checkbox("Rotate?", value=p['rot'])
-        nsplit = c7.checkbox("Center Seam?", value=p.get('split', False))
-        if st.form_submit_button("Update"):
-            st.session_state['pieces'][idx] = {"room": nr, "name": nn, "l": nl, "w": nw, "qty": nq, "rot": nrot, "split": nsplit}
-            st.session_state['editing_idx'] = None
-            st.rerun()
+    
+    # SAFETY: Prevent index error if list changed
+    if idx >= len(st.session_state['pieces']):
+        st.session_state['editing_idx'] = None
+        st.rerun()
+    else:
+        p = st.session_state['pieces'][idx]
+        st.info(f"✏️ Editing: {p['name']}")
+        with st.form("edit"):
+            c1, c2, c3, c4, c5, c6, c7 = st.columns([2, 2, 1, 1, 1, 1, 1])
+            nr = c1.text_input("Room", p['room'])
+            nn = c2.text_input("Name", p['name'])
+            # Explicit min_value=0.0 to prevent crash
+            nl = c3.number_input("L", min_value=0.0, value=float(p['l']))
+            nw = c4.number_input("W", min_value=0.0, value=float(p['w']))
+            nq = c5.number_input("Qty", min_value=1, value=int(p['qty']))
+            nrot = c6.checkbox("Rotate?", value=p['rot'])
+            nsplit = c7.checkbox("Center Seam?", value=p.get('split', False))
+            if st.form_submit_button("Update"):
+                st.session_state['pieces'][idx] = {"room": nr, "name": nn, "l": nl, "w": nw, "qty": nq, "rot": nrot, "split": nsplit}
+                st.session_state['editing_idx'] = None
+                st.rerun()
 
 # --- ADD FORM ---
 st.subheader(f"2. Add Pieces for: {material}")
 c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([2, 2, 1.2, 1.2, 1, 1, 1, 1])
 room = c1.text_input("Room", "Kitchen", key="ar")
 name = c2.text_input("Name", "Counter", key="an")
-l = c3.number_input("Length", 0.0, key="al")
-w = c4.number_input("Width", 0.0, key="aw")
-qty = c5.number_input("Qty", 1, key="aq")
+# Explicit min_value=0.0
+l = c3.number_input("Length", min_value=0.0, value=0.0, key="al")
+w = c4.number_input("Width", min_value=0.0, value=0.0, key="aw")
+qty = c5.number_input("Qty", min_value=1, value=1, key="aq")
 rot = c6.checkbox("Rotate?", key="arot")
 split = c7.checkbox("Center Seam?", key="asplit")
 if c8.button("➕ Add"):
@@ -390,7 +379,12 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
                 st.dataframe(df_rooms, hide_index=True)
 
                 html = generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, kerf, slabs, tot_cost, waste)
-                st.download_button("📄 Download Job Ticket", html, "ticket.html", "text/html")
+                st.download_button(
+                    label="📄 Download Job Ticket (v40)", 
+                    data=html, 
+                    file_name=f"{job_name.replace(' ', '_')}_Ticket_v40.html", 
+                    mime="text/html"
+                )
                 
                 st.divider()
                 for i, b in enumerate(packer.bins):
@@ -413,7 +407,6 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
                         lbl = f"{rid}\n{dw:.1f}x{dh:.1f}"
                         rot_deg = 90 if dh > dw else 0
                         
-                        # TINY TEXT ON SCREEN
                         font_size = min(dw, dh) * 0.4
                         ax.text(cx, cy, lbl, ha='center', va='center', fontsize=font_size, rotation=rot_deg, color='black')
                         
