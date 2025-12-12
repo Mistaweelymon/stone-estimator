@@ -7,18 +7,16 @@ import pandas as pd
 import math
 
 # ==========================================
-#   CUSTOM PACKING ENGINE (Guillotine + Collision Check)
+#   CUSTOM PACKING ENGINE (Guillotine + Row Priority)
 # ==========================================
 class SimpleBin:
     def __init__(self, width, height):
         self.w, self.h = width, height
-        self.placed_rects = []  # Stores (x, y, w, h, id)
+        self.rects = []
         self.free_rects = [(0, 0, width, height)]
 
     def has_collision(self, x, y, w, h):
-        # "Paranoid" check: Does this new box hit any existing box?
-        for (rx, ry, rw, rh, _) in self.placed_rects:
-            # Check for intersection
+        for (rx, ry, rw, rh, _) in self.rects:
             if (x < rx + rw) and (x + w > rx) and (y < ry + rh) and (y + h > ry):
                 return True
         return False
@@ -47,11 +45,10 @@ class SimpleBin:
             fx, fy, fw, fh = self.free_rects.pop(best_rect_idx)
             final_w, final_h = best_orientation
             
-            # Final Safety: If math float errors cause a collision, reject this spot
             if self.has_collision(fx, fy, final_w, final_h):
                 return False
 
-            self.placed_rects.append((fx, fy, final_w, final_h, rid))
+            self.rects.append((fx, fy, final_w, final_h, rid))
             
             rem_w = max(0, fw - final_w)
             rem_h = max(0, fh - final_h)
@@ -75,7 +72,6 @@ class StonePacker:
         self.bins = []
 
     def pack(self, pieces):
-        # Sort by Area
         pieces.sort(key=lambda x: x[0] * x[1], reverse=True)
         for p in pieces:
             pl, pw, pid, rot = p
@@ -103,7 +99,7 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
     
     cut_list_rows = ""
     for b in packer.bins:
-        for (rx, ry, rw, rh, rid) in b.placed_rects:
+        for (rx, ry, rw, rh, rid) in b.rects:
             final_l = rw - (2*kerf)
             final_w = rh - (2*kerf)
             piece_sf = (final_l * final_w) / 144.0
@@ -166,7 +162,7 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
                 <rect x="0" y="0" width="{slab_l}" height="{slab_w}" fill="none" stroke="black" stroke-width="0.2"/>
                 <rect x="{slab_trim}" y="{slab_trim}" width="{safe_w}" height="{safe_h}" class="safe"/>
         """
-        for (rx, ry, rw, rh, rid) in b.placed_rects:
+        for (rx, ry, rw, rh, rid) in b.rects:
             draw_x = rx + slab_trim + kerf
             draw_y = ry + slab_trim + kerf
             draw_w = rw - (2*kerf)
@@ -176,24 +172,20 @@ def generate_html_ticket(packer, job_name, material, slab_l, slab_w, slab_trim, 
             kerf_y = ry + slab_trim
             html += f"""<rect class="kerf" x="{kerf_x}" y="{kerf_y}" width="{rw}" height="{rh}" />"""
             
-            # --- CLEANER TEXT LOGIC ---
-            # If piece is small strip (<10"), show only Dims, hide Name
-            is_strip = min(draw_w, draw_h) < 10
-            
-            label_txt = f"{draw_w:.0f}x{draw_h:.0f}"
-            if not is_strip:
-                label_txt = f"{rid} ({label_txt})"
-            
-            font_size = max(3.0, min(draw_w, draw_h) * 0.5)
-            if font_size > 8.0: font_size = 8.0
+            # --- FIXED FONT SIZE ---
+            # Instead of scaling with the piece, we scale with the SLAB.
+            # This guarantees text is roughly 4% of the slab length (readable on paper).
+            # We don't care if it bleeds out of small boxes.
+            font_size = slab_l * 0.035 
             
             transform = ""
+            # If the piece is very narrow vertical strip, rotate text
             if draw_h > draw_w and draw_w < 15: 
                  transform = f'transform="rotate(90, {draw_x + draw_w/2}, {draw_y + draw_h/2})"'
 
             html += f"""
                 <rect class="piece" x="{draw_x}" y="{draw_y}" width="{draw_w}" height="{draw_h}" />
-                <text x="{draw_x + draw_w/2}" y="{draw_y + draw_h/2}" font-size="{font_size}" {transform}>{label_txt}</text>
+                <text x="{draw_x + draw_w/2}" y="{draw_y + draw_h/2}" font-size="{font_size}" {transform}>{rid} ({draw_w:.0f}x{draw_h:.0f})</text>
             """
         html += "</svg></div>"
     html += "</body></html>"
@@ -348,7 +340,7 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
                 room_sf = collections.defaultdict(float)
                 final_stone_sf = 0.0
                 for b in packer.bins:
-                    for (rx, ry, rw, rh, rid) in b.placed_rects:
+                    for (rx, ry, rw, rh, rid) in b.rects:
                         f_l = rw - (2*kerf)
                         f_w = rh - (2*kerf)
                         sf = (f_l * f_w) / 144.0
@@ -377,32 +369,26 @@ if st.button("🚀 CALCULATE LAYOUT", type="primary"):
                     ax.add_patch(patches.Rectangle((0, 0), slab_l, slab_w, facecolor='#eee', edgecolor='black'))
                     ax.add_patch(patches.Rectangle((slab_trim, slab_trim), usable_l, usable_w, linewidth=1.5, linestyle='--', edgecolor='red', facecolor='none'))
                     
-                    for (rx, ry, rw, rh, rid) in b.placed_rects:
+                    for (rx, ry, rw, rh, rid) in b.rects:
                         dx, dy = rx + slab_trim + kerf, ry + slab_trim + kerf
                         dw, dh = rw - (2*kerf), rh - (2*kerf)
                         
                         kx = rx + slab_trim
                         ky = ry + slab_trim
+                        ax.add_patch(patches.Rectangle((kx, ky), rw, rh, linewidth=0.5, linestyle=':', edgecolor='gray', facecolor='none'))
+
+                        ax.add_patch(patches.Rectangle((dx, dy), dw, dh, facecolor='#d1e7dd', edgecolor='green'))
                         
-                        # --- CLIPPED TEXT LOGIC ---
-                        # Create the green rectangle (the stone)
-                        stone_rect = patches.Rectangle((dx, dy), dw, dh, facecolor='#d1e7dd', edgecolor='green')
-                        ax.add_patch(stone_rect)
-                        
-                        # Abbreviate Text if skinny
-                        is_strip = min(dw, dh) < 10
+                        cx, cy = dx + dw/2, dy + dh/2
                         lbl = f"{rid}\n{dw:.1f}x{dh:.1f}"
-                        if is_strip: 
-                            lbl = f"{dw:.1f}x{dh:.1f}"
-                        
-                        # Calculate rotation
                         rot_deg = 90 if dh > dw else 0
                         
-                        # Add text with CLIP_ON=True
-                        # This forces text to vanish if it crosses the green line
-                        cx, cy = dx + dw/2, dy + dh/2
+                        # --- CLIPPED TEXT LOGIC ---
                         t = ax.text(cx, cy, lbl, ha='center', va='center', fontsize=8, rotation=rot_deg, color='black')
-                        t.set_clip_path(stone_rect) # MAGIC LINE: Cuts off bleeding text
+                        
+                        # Create clip path (Match the green stone rectangle)
+                        clip_rect = patches.Rectangle((dx, dy), dw, dh, transform=ax.transData)
+                        t.set_clip_path(clip_rect)
                         
                     ax.set_xlim(0, slab_l); ax.set_ylim(0, slab_w); ax.set_aspect('equal'); plt.axis('off')
                     st.pyplot(fig)
